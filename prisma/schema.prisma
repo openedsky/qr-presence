@@ -1,0 +1,314 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  MEETING_ADMIN
+  ORGANIZER
+  SECRETARY
+  AUDITOR
+  USER
+}
+
+enum MeetingStatus {
+  BROUILLON
+  PLANIFIEE
+  OUVERTE
+  EN_COURS
+  CLOTUREE
+  ARCHIVEE
+}
+
+enum MeetingType {
+  COMITE
+  ATELIER
+  SEMINAIRE
+  ASSEMBLEE
+  FORMATION
+  AUTRE
+}
+
+enum QrMode {
+  STATIC
+  DYNAMIC
+}
+
+enum QrTokenType {
+  STATIC
+  DYNAMIC
+}
+
+enum AttendanceStatus {
+  ACTIVE
+  ANNULEE
+}
+
+enum CheckInMethod {
+  QR_CODE
+  ADMIN_MANUAL
+  KIOSK
+}
+
+enum Civility {
+  M
+  MME
+  MLLE
+}
+
+enum Gender {
+  M
+  F
+}
+
+enum DocumentType {
+  QR_POSTER
+  LISTE_PROVISOIRE
+  LISTE_OFFICIELLE
+  LISTE_PUBLIQUE
+  STATISTIQUES
+}
+
+model User {
+  id             String    @id @default(cuid())
+  uuid           String    @unique @default(uuid())
+  email          String    @unique
+  passwordHash   String
+  firstName      String
+  lastName       String
+  jobTitle       String?
+  organization   String?
+  phone          String?
+  role           Role      @default(USER)
+  active         Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  legacyUserId   Int?
+
+  createdMeetings    Meeting[]            @relation("MeetingCreator")
+  updatedMeetings    Meeting[]            @relation("MeetingUpdater")
+  closedMeetings     Meeting[]            @relation("MeetingCloser")
+  attendances        Attendance[]
+  createdAttendances Attendance[]         @relation("AttendanceCreator")
+  updatedAttendances Attendance[]         @relation("AttendanceUpdater")
+  auditLogs          AuditLog[]
+  generatedDocs      GeneratedDocument[]
+  passwordResets     PasswordReset[]
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model OrganizationSetting {
+  id                       String  @id @default(cuid())
+  organizationName         String  @default("SODEFOR")
+  ministryName             String  @default("Ministère des Eaux et Forêts")
+  appName                  String  @default("SODEFOR Présences")
+  appTagline               String  @default("Gestion intelligente des réunions et présences")
+  publicBaseUrl            String  @default("https://presence.sodefor.ci")
+  retentionMonths          Int     @default(60)
+  emailRequiredDefault     Boolean @default(true)
+  signatureRequiredDefault Boolean @default(true)
+  dynamicQrSeconds         Int     @default(45)
+  rateLimitPerMinute       Int     @default(20)
+  privacyNotice            String  @db.Text
+}
+
+model Meeting {
+  id                   String        @id @default(cuid())
+  uuid                 String        @unique @default(uuid())
+  title                String
+  internalRef          String        @unique
+  slug                 String        @unique
+  description          String?       @db.Text
+  type                 MeetingType   @default(COMITE)
+  location             String?
+  videoConferenceUrl   String?
+  startsAt             DateTime
+  endsAt               DateTime?
+  registrationOpensAt  DateTime?
+  registrationClosesAt DateTime?
+  toleranceMinutes     Int           @default(15)
+  status               MeetingStatus @default(BROUILLON)
+  qrMode               QrMode        @default(STATIC)
+  qrSecurityLevel      Int           @default(1)
+  allowGuests          Boolean       @default(true)
+  showPublicAttendance Boolean       @default(false)
+  expectedParticipants Int?
+  signatureRequired    Boolean       @default(true)
+  emailRequired        Boolean       @default(true)
+  active               Boolean       @default(true)
+  internalNotes        String?       @db.Text
+  createdById          String
+  updatedById          String?
+  closedAt             DateTime?
+  closedById           String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  legacyPublicationId  Int?
+  legacySha1           String?
+  legacySha2           String?
+
+  createdBy   User               @relation("MeetingCreator", fields: [createdById], references: [id])
+  updatedBy   User?              @relation("MeetingUpdater", fields: [updatedById], references: [id])
+  closedBy    User?              @relation("MeetingCloser", fields: [closedById], references: [id])
+  attendances Attendance[]
+  qrTokens    MeetingQrToken[]
+  documents   GeneratedDocument[]
+  guests      ExpectedGuest[]
+
+  @@index([status, startsAt])
+  @@index([createdById])
+}
+
+model ExpectedGuest {
+  id           String  @id @default(cuid())
+  meetingId    String
+  meeting      Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  lastName     String
+  firstNames   String
+  email        String?
+  organization String?
+  jobTitle     String?
+  present      Boolean @default(false)
+
+  @@index([meetingId])
+}
+
+model Attendance {
+  id                 String           @id @default(cuid())
+  uuid               String           @unique @default(uuid())
+  meetingId          String
+  meeting            Meeting          @relation(fields: [meetingId], references: [id])
+  userId             String?
+  user               User?            @relation(fields: [userId], references: [id])
+  civility           Civility
+  lastName           String
+  firstNames         String
+  gender             Gender
+  jobTitle           String
+  organization       String
+  email              String?
+  phone              String?
+  emailNormalized    String?
+  phoneNormalized    String?
+  nameKey            String
+  // Renseignées uniquement pour une présence ACTIVE : les index uniques bloquent les doublons concurrents.
+  activeEmailKey     String?
+  activePhoneKey     String?
+  activeNameKey      String?
+  activeUserKey      String?
+  signatureObjectKey String?
+  signatureHash      String?
+  signatureMime      String?
+  signatureSize      Int?
+  checkInAt          DateTime         @default(now())
+  checkInMethod      CheckInMethod    @default(QR_CODE)
+  status             AttendanceStatus @default(ACTIVE)
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancelReason       String?
+  ipHash             String?
+  userAgent          String?          @db.Text
+  confirmationCode   String           @unique
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  createdById        String?
+  updatedById        String?
+  createdBy          User?            @relation("AttendanceCreator", fields: [createdById], references: [id])
+  updatedBy          User?            @relation("AttendanceUpdater", fields: [updatedById], references: [id])
+  legacyPresenceId   Int?
+  changes            AttendanceChange[]
+
+  @@index([meetingId, status])
+  @@index([meetingId, emailNormalized])
+  @@index([meetingId, phoneNormalized])
+  @@index([meetingId, nameKey])
+  @@index([meetingId, userId])
+  @@unique([meetingId, activeEmailKey])
+  @@unique([meetingId, activePhoneKey])
+  @@unique([meetingId, activeNameKey])
+  @@unique([meetingId, activeUserKey])
+}
+
+model AttendanceChange {
+  id           String     @id @default(cuid())
+  attendanceId String
+  attendance   Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  actorId      String?
+  field        String
+  oldValue     String?    @db.Text
+  newValue     String?    @db.Text
+  createdAt    DateTime   @default(now())
+}
+
+model MeetingQrToken {
+  id         String      @id @default(cuid())
+  meetingId  String
+  meeting    Meeting     @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  tokenHash  String      @unique
+  publicToken String?    @unique
+  tokenHint  String
+  type       QrTokenType
+  validFrom  DateTime    @default(now())
+  validUntil DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime    @default(now())
+
+  @@index([meetingId, type])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entity     String
+  entityId   String
+  beforeData Json?
+  afterData  Json?
+  ipAddress  String?
+  userAgent  String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([actorId])
+}
+
+model GeneratedDocument {
+  id            String       @id @default(cuid())
+  meetingId     String
+  meeting       Meeting      @relation(fields: [meetingId], references: [id])
+  type          DocumentType
+  uuid          String       @unique @default(uuid())
+  version       Int          @default(1)
+  objectKey     String
+  sha256        String
+  generatedById String?
+  generatedBy   User?        @relation(fields: [generatedById], references: [id])
+  generatedAt   DateTime     @default(now())
+
+  @@index([meetingId, type])
+}
+
+model Structure {
+  id       String  @id @default(cuid())
+  name     String  @unique
+  internal Boolean @default(true)
+  active   Boolean @default(true)
+}

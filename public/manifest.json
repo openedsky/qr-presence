@@ -1,0 +1,18 @@
+{
+  "name": "SODEFOR Présences",
+  "short_name": "Présences",
+  "description": "Gestion intelligente des réunions et des listes de présence SODEFOR",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f3",
+  "theme_color": "#14532d",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

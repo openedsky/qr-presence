@@ -1,0 +1,60 @@
+openapi: 3.0.3
+info:
+  title: SODEFOR Présences API
+  version: 1.0.0
+  description: API d'intégration Intranet / back-office.
+servers:
+  - url: https://presence.sodefor.ci
+paths:
+  /api/health:
+    get:
+      summary: Santé applicative
+      responses:
+        "200":
+          description: OK
+  /api/meetings:
+    get:
+      summary: Lister les réunions
+      responses:
+        "200":
+          description: Liste
+    post:
+      summary: Créer une réunion
+      responses:
+        "200":
+          description: Créée
+  /api/meetings/{id}:
+    get:
+      summary: Détail réunion
+    patch:
+      summary: Modifier une réunion
+  /api/meetings/{id}/attendances:
+    get:
+      summary: Lister les présences
+    post:
+      summary: Ajout manuel
+  /api/meetings/{id}/open:
+    post:
+      summary: Ouvrir les inscriptions
+  /api/meetings/{id}/close:
+    post:
+      summary: Clôturer
+  /api/meetings/{id}/qr:
+    get:
+      summary: URL QR courante
+  /api/meetings/{id}/exports/pdf:
+    get:
+      summary: Liste PDF
+  /api/meetings/{id}/exports/xlsx:
+    get:
+      summary: Export Excel
+  /api/public/meetings/{token}/attendance:
+    post:
+      summary: Émargement public
+      responses:
+        "200":
+          description: Présence enregistrée
+        "409":
+          description: Doublon ou réunion fermée
+        "410":
+          description: QR expiré
