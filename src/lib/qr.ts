@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { cacheGet, cacheSet } from "./redis";
+import { cacheDel, cacheGet, cacheSet } from "./redis";
 import { generatePublicToken, hashToken, publicAttendanceUrl, tokenHint } from "./tokens";
 import { prisma } from "./prisma";
 import type { Meeting } from "@prisma/client";
@@ -29,9 +29,18 @@ export async function ensureStaticToken(meeting: Meeting) {
   return { token, url: publicAttendanceUrl(token) };
 }
 
+/**
+ * Marge après le renouvellement à l'écran : un QR scanné juste avant le changement reste accepté
+ * le temps que le téléphone ouvre la page.
+ */
+export const DYNAMIC_GRACE_SECONDS = 20;
+
+type DynamicEntry = { token: string; displayUntil: number };
+
 export async function issueDynamicToken(meeting: Meeting, ttlSeconds: number) {
   const token = generatePublicToken();
-  const validUntil = new Date(Date.now() + ttlSeconds * 1000);
+  const displayUntil = Date.now() + ttlSeconds * 1000;
+  const validUntil = new Date(displayUntil + DYNAMIC_GRACE_SECONDS * 1000);
   await prisma.meetingQrToken.create({
     data: {
       meetingId: meeting.id,
@@ -41,14 +50,24 @@ export async function issueDynamicToken(meeting: Meeting, ttlSeconds: number) {
       validUntil,
     },
   });
-  await cacheSet(`qr:dyn:${meeting.id}`, token, ttlSeconds);
-  return { token, url: publicAttendanceUrl(token), validUntil };
+  const entry: DynamicEntry = { token, displayUntil };
+  await cacheSet(`qr:dyn:${meeting.id}`, JSON.stringify(entry), ttlSeconds);
+  return { token, url: publicAttendanceUrl(token), validUntil, secondsLeft: ttlSeconds };
 }
 
+/** Jeton affiché à l'écran et secondes restantes avant renouvellement (un écran rechargé ne repart pas à zéro). */
 export async function currentDynamicToken(meeting: Meeting, ttlSeconds: number) {
   const cached = await cacheGet(`qr:dyn:${meeting.id}`);
   if (cached) {
-    return { token: cached, url: publicAttendanceUrl(cached) };
+    try {
+      const entry = JSON.parse(cached) as DynamicEntry;
+      const secondsLeft = Math.floor((entry.displayUntil - Date.now()) / 1000);
+      if (entry.token && secondsLeft >= 2) {
+        return { token: entry.token, url: publicAttendanceUrl(entry.token), secondsLeft };
+      }
+    } catch {
+      // ancienne valeur (jeton brut) : on en émet un nouveau
+    }
   }
   return issueDynamicToken(meeting, ttlSeconds);
 }
@@ -63,15 +82,18 @@ export async function resolveToken(token: string) {
     include: { meeting: true },
   });
   if (!record) return null;
-  if (record.validUntil && record.validUntil < new Date()) return { expired: true as const, record };
-  return { expired: false as const, record };
+  // Un jeton d'un autre mode (affiche statique d'une réunion passée en dynamique, ou l'inverse) ne vaut pas émargement.
+  const modeMismatch = record.type !== record.meeting.qrMode;
+  if (record.validUntil && record.validUntil < new Date()) return { expired: true as const, modeMismatch, record };
+  return { expired: false as const, modeMismatch, record };
 }
 
-export async function revokeMeetingTokens(meetingId: string) {
+export async function revokeDynamicTokens(meetingId: string) {
   await prisma.meetingQrToken.updateMany({
-    where: { meetingId, revokedAt: null },
+    where: { meetingId, type: "DYNAMIC", revokedAt: null },
     data: { revokedAt: new Date() },
   });
+  await cacheDel(`qr:dyn:${meetingId}`);
 }
 
 export async function qrPngDataUrl(url: string) {

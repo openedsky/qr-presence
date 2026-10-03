@@ -1,15 +1,14 @@
-import { NextResponse } from "next/server";
-import { requireApiPermission } from "@/lib/api-auth";
-import { transitionMeeting } from "@/server/services/meetings";
+import { transitionRoute } from "@/lib/meeting-transition-route";
+import { windowState } from "@/lib/meeting-status";
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const gate = await requireApiPermission("meetings.manage_own");
-  if (gate.error) return gate.error;
   const { id } = await params;
-  try {
-    await transitionMeeting(id, "OUVERTE", gate.session.user.id);
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Erreur" }, { status: 400 });
-  }
+  return transitionRoute(id, "manage", "OUVERTE", (meeting) => {
+    if (meeting.status === "CLOTUREE") return "Une réunion clôturée ne peut être rouverte que par un administrateur.";
+    // Ouverte après sa fenêtre, elle n'accepterait aucun émargement et échapperait à la clôture automatique.
+    if (windowState(meeting) === "after") {
+      return "La fenêtre d'émargement de cette réunion est dépassée : modifiez ses horaires avant de l'ouvrir.";
+    }
+    return null;
+  });
 }

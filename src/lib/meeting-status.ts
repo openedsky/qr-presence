@@ -48,9 +48,53 @@ export function isFrozen(status: MeetingStatus) {
   return status === MeetingStatus.CLOTUREE || status === MeetingStatus.ARCHIVEE;
 }
 
-export function deriveLiveStatus(status: MeetingStatus, startsAt: Date): MeetingStatus {
-  if (status === MeetingStatus.OUVERTE && Date.now() >= startsAt.getTime()) {
-    return MeetingStatus.EN_COURS;
-  }
-  return status;
+type WindowFields = {
+  startsAt: Date;
+  endsAt: Date | null;
+  registrationOpensAt: Date | null;
+  registrationClosesAt: Date | null;
+  toleranceMinutes: number;
+};
+
+/** Réunion sans heure de fin : l'émargement se ferme au plus tard 12 h après le début. */
+export const OPEN_ENDED_HOURS = 12;
+
+/**
+ * Fenêtre d'émargement : ouverture explicite ou début − tolérance ; fermeture explicite ou fin, + tolérance
+ * (à défaut, début + 12 h). Elle s'applique quel que soit le niveau de sécurité du QR.
+ */
+export function registrationWindow(meeting: WindowFields) {
+  const tolerance = meeting.toleranceMinutes * 60000;
+  const opensAt = meeting.registrationOpensAt ?? new Date(meeting.startsAt.getTime() - tolerance);
+  const closeBase = meeting.registrationClosesAt ?? meeting.endsAt;
+  const closesAt = closeBase
+    ? new Date(closeBase.getTime() + tolerance)
+    : new Date(meeting.startsAt.getTime() + OPEN_ENDED_HOURS * 3600_000);
+  return { opensAt, closesAt };
+}
+
+export function windowState(meeting: WindowFields, now = new Date()): "before" | "open" | "after" {
+  const { opensAt, closesAt } = registrationWindow(meeting);
+  if (now < opensAt) return "before";
+  if (now > closesAt) return "after";
+  return "open";
+}
+
+export type SelfRegistrationState = "open" | "not_open" | "before" | "after" | "closed";
+
+/** Émargement libre-service possible ? Combine le statut de la réunion et sa fenêtre horaire. */
+export function selfRegistrationState(
+  meeting: WindowFields & { status: MeetingStatus },
+  now = new Date(),
+): SelfRegistrationState {
+  if (isFrozen(meeting.status)) return "closed";
+  const state = windowState(meeting, now);
+  // Jamais ouverte et fenêtre passée : l'émargement n'aura plus lieu (inutile de faire attendre le participant).
+  if (!isRegistrationOpen(meeting.status)) return state === "after" ? "after" : "not_open";
+  return state === "open" ? "open" : state;
+}
+
+/** « En direct » : réunion ouverte et fenêtre d'émargement en cours (hors fenêtre, elle attend sa clôture automatique). */
+export function isLive(meeting: WindowFields & { status: MeetingStatus }, now = new Date()) {
+  return isRegistrationOpen(meeting.status) && windowState(meeting, now) === "open";
 }

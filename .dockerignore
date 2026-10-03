@@ -2,6 +2,8 @@ node_modules
 .next
 .git
 .gitignore
+.github
+.idea
 storage
 coverage
 playwright-report
@@ -10,9 +12,10 @@ tests
 docs
 *.md
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.dokploy.example
 Dockerfile*
 docker-compose*.yml
 .cursor
 .vscode
+scripts/tmp-*

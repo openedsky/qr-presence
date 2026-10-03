@@ -1,13 +1,32 @@
-import { MeetingStatus, Prisma } from "@prisma/client";
+import { MeetingStatus, Prisma, type Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { internalRef, slugify } from "@/lib/utils";
 import { writeAudit } from "@/lib/audit";
-import { canTransition, isRegistrationOpen } from "@/lib/meeting-status";
-import { ensureStaticToken, revokeMeetingTokens } from "@/lib/qr";
+import { canTransition, isRegistrationOpen, STATUS_LABELS } from "@/lib/meeting-status";
+import { ensureStaticToken, revokeDynamicTokens } from "@/lib/qr";
+import { meetingScope } from "@/lib/rbac";
+import { logger } from "@/lib/logger";
+import { generateListDocument } from "./documents";
 
 function uniqueSlug(title: string) {
   const base = slugify(title) || "reunion";
   return `${base}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function isUniqueViolation(error: unknown): error is Prisma.PrismaClientKnownRequestError {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+function uniqueTarget(error: Prisma.PrismaClientKnownRequestError) {
+  const target = error.meta?.target;
+  return Array.isArray(target) ? target.join(",") : String(target ?? "");
+}
+
+export class TransitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TransitionError";
+  }
 }
 
 export async function createMeeting(
@@ -17,36 +36,68 @@ export async function createMeeting(
     createdById: string;
   },
 ) {
-  const meeting = await prisma.meeting.create({
-    data: {
-      ...data,
-      slug: data.slug || uniqueSlug(data.title),
-      internalRef: data.internalRef || internalRef(),
-    },
-  });
+  let meeting;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      meeting = await prisma.meeting.create({
+        data: {
+          ...data,
+          slug: data.slug || uniqueSlug(data.title),
+          internalRef: data.internalRef || internalRef(),
+        },
+      });
+      break;
+    } catch (error) {
+      // Collision sur une référence ou un slug générés : on retire ; une référence saisie remonte en 409.
+      if (!isUniqueViolation(error) || attempt >= 4) throw error;
+      const target = uniqueTarget(error);
+      if (data.internalRef && target.includes("internalRef")) throw error;
+      if (data.slug && target.includes("slug")) throw error;
+    }
+  }
   await ensureStaticToken(meeting);
   await writeAudit({
     actorId: data.createdById,
     action: "meeting.create",
     entity: "Meeting",
     entityId: meeting.id,
-    afterData: { title: meeting.title, status: meeting.status },
+    afterData: {
+      title: meeting.title,
+      internalRef: meeting.internalRef,
+      type: meeting.type,
+      startsAt: meeting.startsAt,
+      endsAt: meeting.endsAt,
+      location: meeting.location,
+      qrMode: meeting.qrMode,
+      status: meeting.status,
+      secretaryId: meeting.secretaryId,
+    },
   });
   return meeting;
 }
 
-export async function duplicateMeeting(id: string, actorId: string, startsAt: Date) {
+/** Copie la configuration (sans notes internes) sur la date choisie, à la même heure que l'original. */
+export async function duplicateMeeting(
+  id: string,
+  actorId: string,
+  day: Date,
+  overrides: { secretaryId?: string | null } = {},
+) {
   const source = await prisma.meeting.findUniqueOrThrow({ where: { id } });
+  const startsAt = new Date(day);
+  startsAt.setUTCHours(source.startsAt.getUTCHours(), source.startsAt.getUTCMinutes(), 0, 0);
+  const shift = (value: Date | null) =>
+    value ? new Date(startsAt.getTime() + (value.getTime() - source.startsAt.getTime())) : undefined;
   const copy = await createMeeting({
-    title: `${source.title} — copie`,
+    title: source.title,
     description: source.description ?? undefined,
     type: source.type,
     location: source.location,
     videoConferenceUrl: source.videoConferenceUrl,
     startsAt,
-    endsAt: source.endsAt
-      ? new Date(startsAt.getTime() + (source.endsAt.getTime() - source.startsAt.getTime()))
-      : undefined,
+    endsAt: shift(source.endsAt),
+    registrationOpensAt: shift(source.registrationOpensAt),
+    registrationClosesAt: shift(source.registrationClosesAt),
     toleranceMinutes: source.toleranceMinutes,
     qrMode: source.qrMode,
     qrSecurityLevel: source.qrSecurityLevel,
@@ -55,7 +106,7 @@ export async function duplicateMeeting(id: string, actorId: string, startsAt: Da
     expectedParticipants: source.expectedParticipants ?? undefined,
     signatureRequired: source.signatureRequired,
     emailRequired: source.emailRequired,
-    internalNotes: source.internalNotes ?? undefined,
+    secretaryId: overrides.secretaryId !== undefined ? overrides.secretaryId : source.secretaryId,
     status: MeetingStatus.BROUILLON,
     createdById: actorId,
   });
@@ -69,31 +120,56 @@ export async function duplicateMeeting(id: string, actorId: string, startsAt: Da
   return copy;
 }
 
+/**
+ * Change le statut par une mise à jour conditionnelle (statut attendu) : deux clics simultanés
+ * ou une clôture automatique concurrente ne peuvent pas appliquer deux fois la même transition.
+ * actorId = null pour la clôture automatique.
+ */
 export async function transitionMeeting(
   id: string,
   to: MeetingStatus,
-  actorId: string,
+  actorId: string | null,
+  options: { auto?: boolean; from?: MeetingStatus } = {},
 ) {
   const meeting = await prisma.meeting.findUniqueOrThrow({ where: { id } });
+  if (options.from && meeting.status !== options.from) {
+    throw new TransitionError("Le statut de la réunion vient d'être modifié par ailleurs : actualisez la page.");
+  }
+  if (meeting.purgedAt && to !== MeetingStatus.ARCHIVEE) {
+    throw new TransitionError("Données anonymisées (durée de conservation écoulée) : la réunion ne peut plus être rouverte.");
+  }
   if (!canTransition(meeting.status, to)) {
-    throw new Error(`Transition ${meeting.status} → ${to} interdite`);
+    throw new TransitionError(`Passage de « ${STATUS_LABELS[meeting.status]} » à « ${STATUS_LABELS[to]} » impossible.`);
+  }
+  if (to === MeetingStatus.PLANIFIEE && meeting.status === MeetingStatus.OUVERTE) {
+    const count = await prisma.attendance.count({ where: { meetingId: id } });
+    if (count > 0) {
+      throw new TransitionError("Des participants ont déjà émargé : la réunion ne peut plus revenir à l'état planifié.");
+    }
   }
 
-  const updated = await prisma.meeting.update({
-    where: { id },
+  const closing = to === MeetingStatus.CLOTUREE;
+  const reopening = to === MeetingStatus.OUVERTE && meeting.status === MeetingStatus.CLOTUREE;
+  const result = await prisma.meeting.updateMany({
+    where: { id, status: meeting.status },
     data: {
       status: to,
-      updatedById: actorId,
-      closedAt: to === MeetingStatus.CLOTUREE ? new Date() : meeting.closedAt,
-      closedById: to === MeetingStatus.CLOTUREE ? actorId : meeting.closedById,
+      ...(actorId ? { updatedById: actorId } : {}),
+      ...(closing ? { closedAt: new Date(), closedById: actorId, autoClosed: Boolean(options.auto) } : {}),
+      ...(reopening ? { closedAt: null, closedById: null, autoClosed: false, reopenedAt: new Date() } : {}),
     },
   });
-
-  if (to === MeetingStatus.CLOTUREE || to === MeetingStatus.ARCHIVEE) {
-    await revokeMeetingTokens(id);
+  if (result.count === 0) {
+    throw new TransitionError("Le statut de la réunion vient d'être modifié par ailleurs : actualisez la page.");
   }
-  if (to === MeetingStatus.OUVERTE && meeting.status === MeetingStatus.CLOTUREE) {
-    // Les affiches déjà imprimées doivent redevenir valides après une réouverture.
+  const updated = await prisma.meeting.findUniqueOrThrow({ where: { id } });
+
+  // Le jeton statique n'est pas révoqué à la clôture : l'affiche doit afficher « réunion clôturée ».
+  // Le statut suffit à refuser tout nouvel émargement.
+  if (closing || to === MeetingStatus.ARCHIVEE) {
+    await revokeDynamicTokens(id);
+  }
+  if (reopening) {
     const lastStatic = await prisma.meetingQrToken.findFirst({
       where: { meetingId: id, type: "STATIC" },
       orderBy: { createdAt: "desc" },
@@ -107,29 +183,36 @@ export async function transitionMeeting(
 
   await writeAudit({
     actorId,
-    action:
-      to === MeetingStatus.CLOTUREE
-        ? "meeting.close"
-        : to === MeetingStatus.OUVERTE && meeting.status === MeetingStatus.CLOTUREE
-          ? "meeting.reopen"
-          : "meeting.status",
+    action: options.auto ? "meeting.auto_close" : closing ? "meeting.close" : reopening ? "meeting.reopen" : "meeting.status",
     entity: "Meeting",
     entityId: id,
     beforeData: { status: meeting.status },
     afterData: { status: to },
   });
 
+  if (closing) {
+    // Établie en arrière-plan : la clôture répond sans attendre le rendu du PDF. Un export lancé entre-temps
+    // attend la même génération (file par réunion) au lieu d'en produire une seconde.
+    void (async () => {
+      const actor = actorId ? await prisma.user.findUnique({ where: { id: actorId } }) : null;
+      await generateListDocument({ meeting: updated, actor, kind: "official" });
+    })().catch((error) => {
+      // La clôture reste acquise : la liste officielle sera régénérée au prochain export.
+      logger.error("meeting.official_list_failed", { meetingId: id, error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   return updated;
 }
 
 export function meetingWhereForRole(
-  role: string,
+  role: Role,
   userId: string,
   extra: Prisma.MeetingWhereInput = {},
 ): Prisma.MeetingWhereInput {
-  if (role === "ORGANIZER") {
-    return { AND: [{ createdById: userId }, extra] };
-  }
+  const scope = meetingScope(role);
+  if (scope === "own") return { AND: [{ createdById: userId }, extra] };
+  if (scope === "assigned") return { AND: [{ secretaryId: userId }, extra] };
   return extra;
 }
 

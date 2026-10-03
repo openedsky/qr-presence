@@ -1,6 +1,13 @@
 # Compose de production pour Dokploy.
 # - Aucun port publié : le domaine HTTPS est attaché au service "nextjs" (port 3000) depuis l'interface Dokploy.
-# - Toutes les valeurs sensibles viennent de l'onglet "Environment" de Dokploy.
+# - Base, cache et stockage sont sur un réseau interne sans accès extérieur.
+# - Toutes les valeurs sensibles viennent de l'onglet "Environment" de Dokploy (voir .env.dokploy.example).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "10"
 
 services:
   nextjs:
@@ -14,13 +21,16 @@ services:
       - "3000"
     environment:
       NODE_ENV: production
+      TZ: Africa/Abidjan
       APP_URL: ${APP_URL:?APP_URL requis}
       NEXT_PUBLIC_APP_URL: ${APP_URL}
       AUTH_URL: ${APP_URL}
       AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET requis}
-      AUTH_TRUST_HOST: "true"
-      DATABASE_URL: mysql://${DB_USER:-sodefor}:${DB_PASSWORD:?DB_PASSWORD requis}@mariadb:3306/${DB_NAME:-sodefor_presences}
-      REDIS_URL: redis://redis:6379
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      DATABASE_URL: mysql://${DB_USER:-sodefor}:${DB_PASSWORD:?DB_PASSWORD requis}@mariadb:3306/${DB_NAME:-sodefor_presences}?connection_limit=${DB_CONNECTION_LIMIT:-10}&pool_timeout=10
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD requis}@redis:6379
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-1}
+      INTERNAL_EMAIL_DOMAINS: ${INTERNAL_EMAIL_DOMAINS:-sodefor.ci}
       STORAGE_DRIVER: s3
       S3_ENDPOINT: ${S3_ENDPOINT:-http://storage:8333}
       S3_REGION: ${S3_REGION:-us-east-1}
@@ -28,7 +38,10 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-sodefor}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY requis}
       S3_FORCE_PATH_STYLE: "true"
-      SEED_ON_BOOT: ${SEED_ON_BOOT:-0}
+      SEED_ON_BOOT: ${SEED_ON_BOOT:-auto}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      HEALTH_TOKEN: ${HEALTH_TOKEN:-}
       PRISMA_ACCEPT_DATA_LOSS: ${PRISMA_ACCEPT_DATA_LOSS:-0}
     depends_on:
       mariadb:
@@ -39,11 +52,21 @@ services:
         condition: service_healthy
     volumes:
       - app_storage:/data/storage
+    networks:
+      - default
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1536M
+    logging: *logging
 
   mariadb:
     image: mariadb:11.4
     restart: unless-stopped
     environment:
+      TZ: Africa/Abidjan
       MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD requis}
       MARIADB_DATABASE: ${DB_NAME:-sodefor_presences}
       MARIADB_USER: ${DB_USER:-sodefor}
@@ -51,47 +74,99 @@ services:
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     volumes:
       - mariadb_data:/var/lib/mysql
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging: *logging
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD requis}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy volatile-ttl --requirepass \"$$REDIS_PASSWORD\""]
     volumes:
       - redis_data:/data
+    networks:
+      - backend
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging: *logging
 
-  # Stockage objet privé compatible S3 (signatures, PDF). Les images MinIO ne sont plus publiées publiquement ;
-  # pour un S3 externe (AWS, MinIO sous licence…), renseigner S3_ENDPOINT et supprimer ce service.
+  # Stockage objet privé compatible S3 (signatures, PDF), version figée. Identité limitée au seul bucket.
+  # Pour un S3 externe (AWS, MinIO sous licence…), renseigner S3_ENDPOINT et supprimer ce service.
   storage:
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:4.47
     restart: unless-stopped
     environment:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-sodefor}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:-sodefor-presences}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        printf '{"identities":[{"name":"app","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json
+        printf '{"identities":[{"name":"app","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin:%s","Read:%s","Write:%s","List:%s","Tagging:%s"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" > /tmp/s3.json
         exec weed server -dir=/data -ip=storage -ip.bind=0.0.0.0 -volume.max=0 -s3 -s3.port=8333 -s3.config=/tmp/s3.json
     volumes:
       - storage_data:/data
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
       interval: 10s
       timeout: 5s
       retries: 20
+    logging: *logging
+
+  # Sauvegarde quotidienne de la base (rotation BACKUP_RETENTION_DAYS). Voir docs/BACKUP.md pour l'externalisation.
+  backup:
+    image: mariadb:11.4
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    environment:
+      TZ: Africa/Abidjan
+      DB_HOST: mariadb
+      DB_NAME: ${DB_NAME:-sodefor_presences}
+      DB_USER: ${DB_USER:-sodefor}
+      DB_PASSWORD: ${DB_PASSWORD}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+      BACKUP_REMOTE_CMD: ${BACKUP_REMOTE_CMD:-}
+      # Stockage objet (signatures, listes officielles) archivé avec la base.
+      BACKUP_FILES_DIR: /files
+    volumes:
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      - db_backups:/backups
+      - storage_data:/files:ro
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    networks:
+      - backend
+    logging: *logging
+
+networks:
+  backend:
+    internal: true
 
 volumes:
   mariadb_data:
   redis_data:
   storage_data:
   app_storage:
+  db_backups:

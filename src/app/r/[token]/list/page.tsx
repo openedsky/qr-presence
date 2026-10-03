@@ -2,26 +2,32 @@ import { resolveToken } from "@/lib/qr";
 import { prisma } from "@/lib/prisma";
 import { BrandLockup } from "@/components/logo";
 import { formatDateTime, formatTime } from "@/lib/utils";
+import { isFrozen } from "@/lib/meeting-status";
 import { notFound } from "next/navigation";
 
+export const dynamic = "force-dynamic";
+
+/**
+ * Visible seulement pendant la réunion, avec un QR de la réunion non révoqué, et limitée aux participants
+ * qui ont expressément accepté d'y figurer. Un QR dynamique renouvelé depuis le scan reste accepté
+ * (le participant consulte la liste après avoir émargé) : les jetons dynamiques sont révoqués à la clôture.
+ */
 export default async function PublicListPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const resolved = await resolveToken(token);
-  if (!resolved || resolved.expired) notFound();
+  if (!resolved || resolved.modeMismatch) notFound();
+  if (resolved.expired && resolved.record.type !== "DYNAMIC") notFound();
   const meeting = resolved.record.meeting;
-  if (!meeting.showPublicAttendance) notFound();
+  if (!meeting.showPublicAttendance || isFrozen(meeting.status) || meeting.purgedAt) notFound();
 
-  const rows = await prisma.attendance.findMany({
-    where: { meetingId: meeting.id, status: "ACTIVE" },
-    orderBy: { checkInAt: "asc" },
-    select: {
-      lastName: true,
-      firstNames: true,
-      jobTitle: true,
-      organization: true,
-      checkInAt: true,
-    },
-  });
+  const [rows, total] = await Promise.all([
+    prisma.attendance.findMany({
+      where: { meetingId: meeting.id, status: "ACTIVE", publicListConsent: true },
+      orderBy: { checkInAt: "asc" },
+      select: { id: true, lastName: true, firstNames: true, jobTitle: true, organization: true, checkInAt: true },
+    }),
+    prisma.attendance.count({ where: { meetingId: meeting.id, status: "ACTIVE" } }),
+  ]);
 
   return (
     <div className="min-h-screen bg-sand px-4 py-8">
@@ -32,7 +38,8 @@ export default async function PublicListPage({ params }: { params: Promise<{ tok
           {meeting.title} · {formatDateTime(meeting.startsAt)}
         </p>
         <p className="mt-2 text-xs text-muted">
-          Cette liste ne contient ni email, ni téléphone, ni signature.
+          {total} présence{total > 1 ? "s" : ""} enregistrée{total > 1 ? "s" : ""} · seuls les participants ayant accepté d&apos;y
+          figurer sont listés. Ni email, ni téléphone, ni signature. Liste retirée à la clôture de la réunion.
         </p>
         <div className="card mt-6 overflow-x-auto p-0">
           <table className="w-full text-sm">
@@ -47,14 +54,23 @@ export default async function PublicListPage({ params }: { params: Promise<{ tok
             </thead>
             <tbody>
               {rows.map((row, index) => (
-                <tr key={`${row.lastName}-${row.checkInAt}`} className="border-t border-line">
+                <tr key={row.id} className="border-t border-line">
                   <td className="px-4 py-3">{index + 1}</td>
-                  <td>{row.lastName} {row.firstNames}</td>
+                  <td>
+                    {row.lastName} {row.firstNames}
+                  </td>
                   <td>{row.jobTitle}</td>
                   <td>{row.organization}</td>
                   <td>{formatTime(row.checkInAt)}</td>
                 </tr>
               ))}
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-6 text-center text-muted">
+                    Aucun participant n&apos;a encore accepté de figurer sur la liste publique.
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>

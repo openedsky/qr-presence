@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   PutObjectCommand,
@@ -63,25 +64,45 @@ export async function putObject(key: string, body: Buffer, contentType: string) 
   }
 
   const dest = join(/*turbopackIgnore: true*/ localDir(), key);
-  mkdirSync(/*turbopackIgnore: true*/ dirname(dest), { recursive: true });
-  writeFileSync(/*turbopackIgnore: true*/ dest, body);
+  await mkdir(/*turbopackIgnore: true*/ dirname(dest), { recursive: true });
+  await writeFile(/*turbopackIgnore: true*/ dest, body);
   return key;
 }
 
 export async function getObjectBuffer(key: string): Promise<Buffer | null> {
   if (isS3() && process.env.S3_BUCKET) {
-    const res = await s3().send(
-      new GetObjectCommand({
-        Bucket: process.env.S3_BUCKET,
-        Key: key,
-      }),
-    );
-    if (!res.Body) return null;
-    return Buffer.from(await res.Body.transformToByteArray());
+    try {
+      const res = await s3().send(
+        new GetObjectCommand({
+          Bucket: process.env.S3_BUCKET,
+          Key: key,
+        }),
+      );
+      if (!res.Body) return null;
+      return Buffer.from(await res.Body.transformToByteArray());
+    } catch (error) {
+      // Objet absent (purgé, perdu) : même comportement que le stockage local, pas une erreur 500.
+      const name = (error as { name?: string }).name;
+      if (name === "NoSuchKey" || name === "NotFound") return null;
+      throw error;
+    }
   }
   const dest = join(/*turbopackIgnore: true*/ localDir(), key);
-  if (!existsSync(/*turbopackIgnore: true*/ dest)) return null;
-  return readFileSync(/*turbopackIgnore: true*/ dest);
+  try {
+    return await readFile(/*turbopackIgnore: true*/ dest);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function deleteObject(key: string) {
+  if (isS3() && process.env.S3_BUCKET) {
+    await s3().send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+    return;
+  }
+  const dest = join(/*turbopackIgnore: true*/ localDir(), key);
+  await rm(/*turbopackIgnore: true*/ dest, { force: true });
 }
 
 export async function getSignedObjectUrl(key: string, expiresIn = 300) {

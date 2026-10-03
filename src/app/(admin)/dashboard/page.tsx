@@ -1,12 +1,27 @@
-import { Card, PageHeader } from "@/components/ui";
+import { CalendarDays, CalendarRange, PlayCircle, Users } from "lucide-react";
+import { Prisma } from "@prisma/client";
+import { Card, PageHeader, StatCard } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/guards";
-import { STATUS_LABELS, STATUS_TONES } from "@/lib/meeting-status";
+import { hasPermission, meetingScope } from "@/lib/rbac";
+import { meetingWhereForRole } from "@/server/services/meetings";
+import { STATUS_LABELS, STATUS_TONES, isLive } from "@/lib/meeting-status";
 import { formatDateTime } from "@/lib/utils";
+import { actionLabel } from "@/lib/audit-format";
 import Link from "next/link";
 
 export default async function DashboardPage() {
-  await requireSession();
+  const session = await requireSession();
+  const { role, id: userId } = session.user;
+  const scope = (extra: Prisma.MeetingWhereInput = {}) => meetingWhereForRole(role, userId, extra);
+  const perimeter = meetingScope(role);
+  const scopeSql =
+    perimeter === "own"
+      ? Prisma.sql`AND m.createdById = ${userId}`
+      : perimeter === "assigned"
+        ? Prisma.sql`AND m.secretaryId = ${userId}`
+        : Prisma.empty;
+  const canReadAudit = hasPermission(role, "audit.read");
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date();
@@ -24,33 +39,53 @@ export default async function DashboardPage() {
     dailyCounts,
   ] = await Promise.all([
     prisma.meeting.count({
-      where: { startsAt: { gte: startOfDay, lte: endOfDay } },
+      where: scope({ startsAt: { gte: startOfDay, lte: endOfDay } }),
     }),
-    prisma.meeting.count({ where: { status: { in: ["OUVERTE", "EN_COURS"] } } }),
+    prisma.meeting
+      .findMany({
+        where: scope({ status: { in: ["OUVERTE", "EN_COURS"] } }),
+        select: {
+          status: true,
+          startsAt: true,
+          endsAt: true,
+          registrationOpensAt: true,
+          registrationClosesAt: true,
+          toleranceMinutes: true,
+        },
+      })
+      .then((rows) => rows.filter((row) => isLive(row)).length),
     prisma.attendance.count({
-      where: { status: "ACTIVE", checkInAt: { gte: startOfDay, lte: endOfDay } },
+      where: { status: "ACTIVE", checkInAt: { gte: startOfDay, lte: endOfDay }, meeting: scope() },
     }),
-    prisma.meeting.count({ where: { startsAt: { gte: startOfMonth } } }),
+    prisma.meeting.count({ where: scope({ startsAt: { gte: startOfMonth } }) }),
     prisma.meeting.findMany({
+      where: scope(),
       take: 6,
       orderBy: { updatedAt: "desc" },
-      include: { _count: { select: { attendances: true } }, createdBy: true },
+      include: {
+        _count: { select: { attendances: { where: { status: "ACTIVE" } } } },
+        createdBy: { select: { firstName: true, lastName: true } },
+      },
     }),
     prisma.meeting.findMany({
-      where: { startsAt: { gte: new Date() }, status: { not: "ARCHIVEE" } },
+      where: scope({ startsAt: { gte: new Date() }, status: { not: "ARCHIVEE" } }),
       take: 5,
       orderBy: { startsAt: "asc" },
     }),
-    prisma.auditLog.findMany({
-      take: 8,
-      orderBy: { createdAt: "desc" },
-      include: { actor: true },
-    }),
+    canReadAudit
+      ? prisma.auditLog.findMany({
+          take: 8,
+          orderBy: { createdAt: "desc" },
+          include: { actor: { select: { firstName: true, lastName: true } } },
+        })
+      : Promise.resolve([]),
     prisma.$queryRaw<{ day: Date; total: bigint }[]>`
-      SELECT DATE(checkInAt) as day, COUNT(*) as total
-      FROM Attendance
-      WHERE status = 'ACTIVE' AND checkInAt >= DATE_SUB(CURDATE(), INTERVAL 13 DAY)
-      GROUP BY DATE(checkInAt)
+      SELECT DATE(a.checkInAt) as day, COUNT(*) as total
+      FROM Attendance a
+      JOIN Meeting m ON m.id = a.meetingId
+      WHERE a.status = 'ACTIVE' AND a.checkInAt >= DATE_SUB(UTC_DATE(), INTERVAL 13 DAY)
+      ${scopeSql}
+      GROUP BY DATE(a.checkInAt)
       ORDER BY day ASC
     `.catch(() => []),
   ]);
@@ -58,10 +93,10 @@ export default async function DashboardPage() {
   const max = Math.max(1, ...dailyCounts.map((d) => Number(d.total)));
 
   const kpis = [
-    { label: "Réunions aujourd'hui", value: meetingsToday },
-    { label: "Réunions en cours", value: meetingsLive },
-    { label: "Participants aujourd'hui", value: participantsToday },
-    { label: "Réunions ce mois", value: meetingsMonth },
+    { label: "Réunions aujourd'hui", value: meetingsToday, icon: <CalendarDays className="h-5 w-5" />, tone: "forest" as const },
+    { label: "Réunions en cours", value: meetingsLive, icon: <PlayCircle className="h-5 w-5" />, tone: "sky" as const },
+    { label: "Participants aujourd'hui", value: participantsToday, icon: <Users className="h-5 w-5" />, tone: "gold" as const },
+    { label: "Réunions ce mois", value: meetingsMonth, icon: <CalendarRange className="h-5 w-5" />, tone: "rose" as const },
   ];
 
   return (
@@ -70,12 +105,9 @@ export default async function DashboardPage() {
         title="Tableau de bord"
         subtitle="Pilotage des réunions, des émargements et de l'activité récente."
       />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {kpis.map((kpi) => (
-          <Card key={kpi.label}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted">{kpi.label}</p>
-            <p className="mt-3 font-display text-4xl text-forest">{kpi.value}</p>
-          </Card>
+          <StatCard key={kpi.label} label={kpi.label} value={kpi.value} icon={kpi.icon} tone={kpi.tone} />
         ))}
       </div>
 
@@ -89,11 +121,11 @@ export default async function DashboardPage() {
               dailyCounts.map((day) => (
                 <div key={String(day.day)} className="flex flex-1 flex-col items-center gap-2">
                   <div
-                    className="w-full rounded-t-lg bg-leaf"
+                    className="w-full rounded-t-lg bg-gradient-to-t from-forest to-leaf"
                     style={{ height: `${(Number(day.total) / max) * 100}%` }}
                   />
                   <span className="text-[10px] text-muted">
-                    {new Date(day.day).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}
+                    {new Date(day.day).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}
                   </span>
                 </div>
               ))
@@ -101,12 +133,29 @@ export default async function DashboardPage() {
           </div>
         </Card>
         <Card>
-          <h2 className="font-display text-xl text-forest-deep">Réunions à venir</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-xl text-forest-deep">Réunions à venir</h2>
+            <Link href="/calendar" className="inline-flex items-center gap-1 text-sm font-semibold text-forest hover:underline">
+              <CalendarRange className="h-4 w-4" /> Calendrier
+            </Link>
+          </div>
           <div className="mt-4 space-y-3">
             {upcoming.map((meeting) => (
-              <Link key={meeting.id} href={`/meetings/${meeting.id}`} className="block rounded-xl bg-sand p-3">
-                <p className="font-semibold">{meeting.title}</p>
-                <p className="text-xs text-muted">{formatDateTime(meeting.startsAt)}</p>
+              <Link
+                key={meeting.id}
+                href={`/meetings/${meeting.id}`}
+                className="flex items-center gap-3 rounded-xl border border-transparent bg-sand p-3 transition hover:border-leaf/40 hover:bg-mint"
+              >
+                <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-xl bg-paper text-forest shadow-sm">
+                  <span className="text-[10px] font-bold uppercase leading-none">
+                    {meeting.startsAt.toLocaleDateString("fr-FR", { month: "short", timeZone: "Africa/Abidjan" })}
+                  </span>
+                  <span className="font-display text-lg font-semibold leading-none">{meeting.startsAt.getUTCDate()}</span>
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">{meeting.title}</span>
+                  <span className="block text-xs text-muted">{formatDateTime(meeting.startsAt)}</span>
+                </span>
               </Link>
             ))}
             {upcoming.length === 0 ? <p className="text-sm text-muted">Aucune réunion planifiée.</p> : null}
@@ -114,7 +163,7 @@ export default async function DashboardPage() {
         </Card>
       </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+      <div className={`mt-6 grid gap-6 ${canReadAudit ? "xl:grid-cols-2" : ""}`}>
         <Card>
           <h2 className="font-display text-xl text-forest-deep">Dernières réunions</h2>
           <div className="mt-4 overflow-x-auto">
@@ -146,19 +195,21 @@ export default async function DashboardPage() {
             </table>
           </div>
         </Card>
-        <Card>
-          <h2 className="font-display text-xl text-forest-deep">Activité récente</h2>
-          <ul className="mt-4 space-y-3 text-sm">
-            {recentAudit.map((log) => (
-              <li key={log.id} className="rounded-xl bg-sand p-3">
-                <p className="font-semibold">{log.action}</p>
-                <p className="text-xs text-muted">
-                  {log.actor ? `${log.actor.firstName} ${log.actor.lastName}` : "Système"} · {formatDateTime(log.createdAt)}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {canReadAudit ? (
+          <Card>
+            <h2 className="font-display text-xl text-forest-deep">Activité récente</h2>
+            <ul className="mt-4 space-y-3 text-sm">
+              {recentAudit.map((log) => (
+                <li key={log.id} className="rounded-xl bg-sand p-3">
+                  <p className="font-semibold">{actionLabel(log.action)}</p>
+                  <p className="text-xs text-muted">
+                    {log.actor ? `${log.actor.firstName} ${log.actor.lastName}` : "Système"} · {formatDateTime(log.createdAt)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        ) : null}
       </div>
     </div>
   );

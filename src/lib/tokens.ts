@@ -19,8 +19,11 @@ export function safeEqual(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-// APP_URL est lu à l'exécution ; NEXT_PUBLIC_* est figé au moment du build Docker.
-function appBaseUrl() {
+/**
+ * Adresse publique des QR codes et des liens de vérification : variable APP_URL (lue à l'exécution),
+ * seule source de vérité, affichée en lecture seule dans les paramètres.
+ */
+export function appBaseUrl() {
   const base = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   return base.replace(/\/$/, "");
 }

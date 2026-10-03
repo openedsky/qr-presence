@@ -6,12 +6,15 @@
  *   LEGACY_DATABASE_URL="mysql://user:pass@host:3306/old_db" npx tsx scripts/migrate-legacy.ts
  */
 import { PrismaClient } from "@prisma/client";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { nameKey, normalizeEmail } from "../src/lib/identity";
 import { normalizePhone } from "../src/lib/phone";
-import { confirmationCode } from "../src/lib/utils";
 
 const target = new PrismaClient();
+
+function confirmationCode() {
+  return `SDF-${randomBytes(4).toString("hex").toUpperCase()}`;
+}
 
 type LegacyMeeting = {
   id: number;

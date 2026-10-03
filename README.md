@@ -51,21 +51,16 @@ AUTH_URL=http://localhost:3000
 ```bash
 npm install
 npx prisma generate
-npx prisma db push
+npx prisma migrate deploy
 npm run db:seed
 npm run dev
 ```
 
-Comptes de démonstration :
-
-| Rôle | Email | Mot de passe |
-| --- | --- | --- |
-| Super admin | admin@sodefor.ci | Admin@Sodefor2026! |
-| Gestionnaire | gest@sodefor.ci | Gest@Sodefor2026! |
-| Secrétaire | secretaire@sodefor.ci | Secretaire@2026! |
-| Auditeur | audit@sodefor.ci | Audit@Sodefor2026! |
-
-QR de démo : [http://localhost:3000/r/demo-comite-technique-sodefor-2026-token](http://localhost:3000/r/demo-comite-technique-sodefor-2026-token)
+Le seed crée le premier super administrateur (`INITIAL_ADMIN_EMAIL` / `INITIAL_ADMIN_PASSWORD`, sinon un mot de passe
+provisoire affiché une seule fois dans la console) ; il doit être changé à la première connexion.
+Avec `SEED_DEMO=1` (environnements de test uniquement), il ajoute des comptes de démonstration — mot de passe
+`DEMO_PASSWORD` ou aléatoire affiché dans la console — et une réunion de démonstration dont le lien QR est affiché.
+Aucun identifiant n’est publié dans ce dépôt.
 
 ## Docker local
 
@@ -73,7 +68,8 @@ QR de démo : [http://localhost:3000/r/demo-comite-technique-sodefor-2026-token]
 docker compose up -d --build
 ```
 
-L’application écoute sur `http://localhost:3000` (port hôte modifiable avec `APP_PORT`). Le fichier `.env` du projet est lu par docker compose : pour le seed automatique, il doit contenir `SEED_ON_BOOT=1`.
+L’application écoute sur `http://127.0.0.1:3000` (port hôte modifiable avec `APP_PORT`). Le fichier `.env` du projet est
+lu par docker compose et doit définir `AUTH_SECRET`. Ce compose est réservé au poste local (`SEED_DEMO=1`).
 
 ## Dokploy
 
@@ -91,8 +87,10 @@ BASE_URL=https://presence.sodefor.ci npm run test:smoke
 npm run dev
 npm run build
 npm run start
-npm run db:push
+npm run db:migrate   # nouvelle migration en développement (prisma migrate dev)
+npm run db:deploy    # applique les migrations
 npm run db:seed
+npm run typecheck
 npm run db:migrate:legacy
 npm test
 npm run test:e2e

@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 
 FROM node:22-alpine AS base
-RUN apk add --no-cache libc6-compat openssl
+RUN apk add --no-cache libc6-compat openssl tzdata
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    TZ=Africa/Abidjan
 
 FROM base AS deps
 COPY package.json package-lock.json* ./
@@ -22,21 +23,28 @@ COPY . .
 ARG NEXT_PUBLIC_APP_URL=https://presence.sodefor.ci
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 RUN node node_modules/prisma/build/index.js generate
-# Valeurs factices limitées au build : les vraies valeurs sont injectées par Dokploy au runtime.
+# Valeurs factices limitées au build : les vraies valeurs sont injectées au runtime.
 RUN DATABASE_URL="mysql://build:build@127.0.0.1:3306/build" \
-    AUTH_SECRET="build-time-placeholder" \
+    AUTH_SECRET="build-time-placeholder-build-time-placeholder" \
     STORAGE_DRIVER=local \
     node node_modules/next/dist/bin/next build
 
+# Dépendances d'exécution seulement (prisma et tsx servent aux migrations et à l'initialisation au démarrage).
+FROM builder AS prod-deps
+RUN npm prune --omit=dev --legacy-peer-deps --no-audit --no-fund \
+    && node node_modules/prisma/build/index.js generate
+
 FROM base AS runner
+# Heure d'Abidjan = UTC toute l'année : fixée pour que calendrier et tableau de bord ne dépendent pas de l'hôte.
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
+    TZ=UTC \
     STORAGE_LOCAL_DIR=/data/storage
 
 RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
 
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public

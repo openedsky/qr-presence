@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - run: npx prisma generate
+      - run: npx prisma validate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - name: Vulnérabilités des dépendances de production
+        run: npm audit --omit=dev --audit-level=high
+      - name: Build
+        run: npx next build
+        env:
+          DATABASE_URL: mysql://build:build@127.0.0.1:3306/build
+          AUTH_SECRET: ci-build-placeholder-ci-build-placeholder
+          STORAGE_DRIVER: local
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: checks
+    timeout-minutes: 30
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: sodefor_ci
+          MARIADB_USER: sodefor
+          MARIADB_PASSWORD: sodefor
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=3s --health-retries=20
+    env:
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/sodefor_ci
+      SHADOW_DATABASE_URL: mysql://root:root@127.0.0.1:3306/sodefor_shadow
+      REDIS_URL: redis://127.0.0.1:6379
+      AUTH_SECRET: ci-e2e-secret-ci-e2e-secret-ci-e2e-secret
+      AUTH_TRUST_HOST: "true"
+      APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      STORAGE_DRIVER: local
+      SEED_DEMO: "1"
+      DEMO_PASSWORD: E2e-Demo-Password-2026!
+      DEMO_QR_TOKEN: e2eDemoQrTokenForContinuousInteg
+      E2E_EMAIL: gest@sodefor.ci
+      E2E_PASSWORD: E2e-Demo-Password-2026!
+      E2E_DEMO_TOKEN: e2eDemoQrTokenForContinuousInteg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - run: npx prisma generate
+      - name: Migrations sur base neuve
+        run: npx prisma migrate deploy
+      - name: Schéma et migrations alignés
+        run: |
+          mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS sodefor_shadow"
+          npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
+      - run: npm run db:seed
+      - run: npx next build
+      - run: npx playwright install --with-deps chromium
+      - name: Tests de bout en bout
+        run: |
+          npx next start -p 3000 &
+          for i in $(seq 1 60); do curl -sf http://localhost:3000/api/health > /dev/null && break; sleep 1; done
+          npx playwright test
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: checks
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build de l'image
+        run: docker build --build-arg NEXT_PUBLIC_APP_URL=https://presence.sodefor.ci -t sodefor-presences:ci .
+      - name: Analyse de vulnérabilités de l'image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sodefor-presences:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

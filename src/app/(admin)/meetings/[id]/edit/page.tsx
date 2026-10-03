@@ -1,14 +1,16 @@
 import { PageHeader } from "@/components/ui";
-import { prisma } from "@/lib/prisma";
-import { requireSession } from "@/lib/guards";
-import { notFound } from "next/navigation";
+import { requireMeetingPage } from "@/lib/meeting-access";
+import { isFrozen } from "@/lib/meeting-status";
+import { redirect } from "next/navigation";
+import { meetingTypeChoices } from "@/server/services/meeting-types";
+import { secretaryOptions } from "@/server/services/meeting-input";
 import { MeetingForm } from "../../meeting-form";
 
 export default async function EditMeetingPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireSession();
   const { id } = await params;
-  const meeting = await prisma.meeting.findUnique({ where: { id } });
-  if (!meeting) notFound();
+  const { meeting } = await requireMeetingPage(id, "manage");
+  if (isFrozen(meeting.status)) redirect(`/meetings/${meeting.id}`);
+  const [types, secretaries] = await Promise.all([meetingTypeChoices(meeting.type), secretaryOptions()]);
 
   return (
     <div>
@@ -16,7 +18,10 @@ export default async function EditMeetingPage({ params }: { params: Promise<{ id
       <MeetingForm
         actionUrl={`/api/meetings/${meeting.id}`}
         method="PATCH"
+        types={types}
+        secretaries={secretaries}
         initial={{
+          secretaryId: meeting.secretaryId ?? "",
           title: meeting.title,
           internalRef: meeting.internalRef,
           description: meeting.description ?? "",

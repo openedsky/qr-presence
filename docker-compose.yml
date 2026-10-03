@@ -1,4 +1,12 @@
-# Compose local (poste développeur / recette). Pour Dokploy utiliser docker-compose.dokploy.yml.
+# Compose LOCAL (poste développeur / recette) — ne pas utiliser en production : identifiants de service fixes
+# et comptes de démonstration (SEED_DEMO=1). Pour Dokploy, utiliser docker-compose.dokploy.yml.
+# Les ports ne sont publiés que sur 127.0.0.1.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
   nextjs:
@@ -8,16 +16,19 @@ services:
       args:
         NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:3000}
     restart: unless-stopped
+    labels:
+      ci.sodefor.environment: "local-only"
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
+      TZ: Africa/Abidjan
       APP_URL: ${APP_URL:-http://localhost:3000}
       NEXT_PUBLIC_APP_URL: ${APP_URL:-http://localhost:3000}
       AUTH_URL: ${APP_URL:-http://localhost:3000}
-      AUTH_SECRET: ${AUTH_SECRET:-local-docker-secret-change-me-please-32chars}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET requis dans .env (openssl rand -base64 32)}
       AUTH_TRUST_HOST: "true"
-      DATABASE_URL: mysql://sodefor:sodefor@mariadb:3306/sodefor_presences
+      DATABASE_URL: mysql://sodefor:sodefor@mariadb:3306/sodefor_presences?connection_limit=10&pool_timeout=10
       REDIS_URL: redis://redis:6379
       STORAGE_DRIVER: s3
       S3_ENDPOINT: http://storage:8333
@@ -26,7 +37,9 @@ services:
       S3_ACCESS_KEY: sodefor
       S3_SECRET_KEY: sodefor-storage-secret
       S3_FORCE_PATH_STYLE: "true"
-      SEED_ON_BOOT: ${SEED_ON_BOOT:-1}
+      SEED_ON_BOOT: "auto"
+      SEED_DEMO: ${SEED_DEMO:-1}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
     depends_on:
       mariadb:
         condition: service_healthy
@@ -36,18 +49,20 @@ services:
         condition: service_healthy
     volumes:
       - app_storage:/data/storage
+    logging: *logging
 
   mariadb:
     image: mariadb:11.4
     restart: unless-stopped
     environment:
+      TZ: Africa/Abidjan
       MARIADB_ROOT_PASSWORD: root
       MARIADB_DATABASE: sodefor_presences
       MARIADB_USER: sodefor
       MARIADB_PASSWORD: sodefor
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
     healthcheck:
@@ -55,11 +70,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    logging: *logging
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Toutes les clés ont une échéance : sous pression mémoire, les plus proches de l'expiration partent d'abord.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -67,21 +84,23 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+    logging: *logging
 
-  # Stockage objet compatible S3 (signatures, PDF). Remplaçable par AWS S3 ou une instance MinIO via S3_ENDPOINT.
+  # Stockage objet compatible S3 (signatures, PDF). Identité limitée au seul bucket de l'application.
   storage:
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:4.47
     restart: unless-stopped
     environment:
       S3_ACCESS_KEY: sodefor
       S3_SECRET_KEY: sodefor-storage-secret
+      S3_BUCKET: sodefor-presences
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        printf '{"identities":[{"name":"app","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json
+        printf '{"identities":[{"name":"app","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin:%s","Read:%s","Write:%s","List:%s","Tagging:%s"]}]}' "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET" > /tmp/s3.json
         exec weed server -dir=/data -ip=storage -ip.bind=0.0.0.0 -volume.max=0 -s3 -s3.port=8333 -s3.config=/tmp/s3.json
     ports:
-      - "8333:8333"
+      - "127.0.0.1:8333:8333"
     volumes:
       - storage_data:/data
     healthcheck:
@@ -89,6 +108,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    logging: *logging
 
 volumes:
   mariadb_data:

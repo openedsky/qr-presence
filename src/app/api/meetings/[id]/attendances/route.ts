@@ -1,18 +1,47 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireApiPermission } from "@/lib/api-auth";
+import { postCloseGuard, requireMeetingApi } from "@/lib/meeting-access";
 import { attendanceFormSchema } from "@/lib/validators";
-import { ClosedMeetingError, DuplicateAttendanceError, registerAttendance } from "@/server/services/attendances";
+import { fromDateTimeLocal } from "@/lib/utils";
+import { logger } from "@/lib/logger";
+import {
+  AttendanceValidationError,
+  ClosedMeetingError,
+  DuplicateAttendanceError,
+  GuestsNotAllowedError,
+  registerAttendance,
+} from "@/server/services/attendances";
+import { scheduleOfficialRefresh } from "@/server/services/documents";
+import { readJsonBody } from "@/lib/http";
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  const gate = await requireApiPermission("attendances.read");
-  if (gate.error) return gate.error;
+/** Champs exposés au back-office : ni empreinte d'IP ni navigateur (données techniques de sécurité). */
+const PUBLIC_FIELDS = {
+  id: true,
+  civility: true,
+  lastName: true,
+  firstNames: true,
+  gender: true,
+  jobTitle: true,
+  organization: true,
+  email: true,
+  phone: true,
+  suspectedDuplicate: true,
+  checkInAt: true,
+  checkInMethod: true,
+  manualReason: true,
+  status: true,
+  cancelledAt: true,
+  cancelReason: true,
+  confirmationCode: true,
+  publicListConsent: true,
+} as const;
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const gate = await requireMeetingApi(id, "read");
+  if (gate.error) return gate.error;
   const { searchParams } = new URL(request.url);
-  const q = searchParams.get("q") ?? "";
+  const q = (searchParams.get("q") ?? "").slice(0, 100);
   const rows = await prisma.attendance.findMany({
     where: {
       meetingId: id,
@@ -27,28 +56,41 @@ export async function GET(
           ]
         : undefined,
     },
+    select: PUBLIC_FIELDS,
     orderBy: { checkInAt: "asc" },
   });
   return NextResponse.json(rows);
 }
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
-  const gate = await requireApiPermission("attendances.manage");
-  if (gate.error) return gate.error;
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const meeting = await prisma.meeting.findUnique({ where: { id } });
-  if (!meeting) return NextResponse.json({ error: "Réunion introuvable" }, { status: 404 });
-  const body = await request.json();
+  const gate = await requireMeetingApi(id, "attendances.manage");
+  if (gate.error) return gate.error;
+  const meeting = gate.meeting;
+  const body = (await readJsonBody(request)) as Record<string, unknown> | null;
+  if (!body) return NextResponse.json({ error: "Données invalides" }, { status: 400 });
+  const frozen = postCloseGuard(meeting, body.reason);
+  if (frozen.error) return frozen.error;
   const parsed = attendanceFormSchema.safeParse({
-    token: "admin-manual-token-placeholder",
     ...body,
+    token: "admin-manual-token-placeholder",
+    signatureDataUrl: "",
   });
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "Données invalides" }, { status: 400 });
   }
+  const checkInAt = typeof body.checkInAt === "string" && body.checkInAt ? fromDateTimeLocal(body.checkInAt) : null;
+  if (typeof body.checkInAt === "string" && body.checkInAt && !checkInAt) {
+    return NextResponse.json({ error: "Heure d'arrivée invalide" }, { status: 400 });
+  }
+  const earliest = (meeting.registrationOpensAt ?? meeting.startsAt).getTime() - 24 * 60 * 60 * 1000;
+  if (checkInAt && checkInAt.getTime() < earliest) {
+    return NextResponse.json(
+      { error: "L'heure d'arrivée ne peut pas précéder de plus de 24 h l'ouverture de l'émargement." },
+      { status: 400 },
+    );
+  }
+  const manualReason = typeof body.manualReason === "string" ? body.manualReason.trim().slice(0, 400) : null;
   try {
     const attendance = await registerAttendance({
       meetingId: meeting.id,
@@ -66,12 +108,27 @@ export async function POST(
       phone: parsed.data.phone,
       createdById: gate.session.user.id,
       method: "ADMIN_MANUAL",
+      correctionReason: frozen.reason,
+      checkInAt,
+      manualReason,
     });
-    return NextResponse.json({ id: attendance.id, confirmationCode: attendance.confirmationCode });
+    if (frozen.reason) scheduleOfficialRefresh(meeting.id, gate.session.user.id);
+    return NextResponse.json({
+      id: attendance.id,
+      confirmationCode: attendance.confirmationCode,
+      suspectedDuplicate: attendance.suspectedDuplicate,
+    });
   } catch (error) {
-    if (error instanceof DuplicateAttendanceError || error instanceof ClosedMeetingError) {
+    if (error instanceof DuplicateAttendanceError) {
+      return NextResponse.json({ error: error.adminMessage }, { status: 409 });
+    }
+    if (error instanceof ClosedMeetingError || error instanceof GuestsNotAllowedError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Erreur" }, { status: 400 });
+    if (error instanceof AttendanceValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    logger.error("attendance.manual_failed", error);
+    return NextResponse.json({ error: "La présence n'a pas pu être enregistrée." }, { status: 500 });
   }
 }

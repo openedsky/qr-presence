@@ -26,15 +26,6 @@ enum MeetingStatus {
   ARCHIVEE
 }
 
-enum MeetingType {
-  COMITE
-  ATELIER
-  SEMINAIRE
-  ASSEMBLEE
-  FORMATION
-  AUTRE
-}
-
 enum QrMode {
   STATIC
   DYNAMIC
@@ -87,12 +78,25 @@ model User {
   phone          String?
   role           Role      @default(USER)
   active         Boolean   @default(true)
+  /// Mot de passe provisoire (création ou réinitialisation) : changement imposé à la connexion.
+  mustChangePassword Boolean @default(false)
+  /// Incrémentée au changement de mot de passe, de rôle ou à la désactivation : invalide les sessions ouvertes.
+  sessionVersion Int       @default(0)
+  failedLoginCount Int     @default(0)
+  /// Début de la série d'échecs en cours : le compteur repart de zéro après 24 h sans échec.
+  lastFailedLoginAt DateTime?
+  lockedUntil    DateTime?
+  /// Date du dernier mot de passe défini ; un mot de passe provisoire expire 7 jours après.
+  passwordChangedAt DateTime?
   lastLoginAt    DateTime?
+  /// Visite guidée de première connexion terminée ou passée (null : proposée automatiquement).
+  onboardingCompletedAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   legacyUserId   Int?
 
   createdMeetings    Meeting[]            @relation("MeetingCreator")
+  assignedMeetings   Meeting[]            @relation("MeetingSecretary")
   updatedMeetings    Meeting[]            @relation("MeetingUpdater")
   closedMeetings     Meeting[]            @relation("MeetingCloser")
   attendances        Attendance[]
@@ -126,6 +130,39 @@ model OrganizationSetting {
   dynamicQrSeconds         Int     @default(45)
   rateLimitPerMinute       Int     @default(20)
   privacyNotice            String  @db.Text
+  backgroundColor          String  @default("#f4f6f1")
+  cardColor                String  @default("#ffffff")
+  sidebarColor             String  @default("#0b3d24")
+  primaryColor             String  @default("#14532d")
+  /// Logo de la structure en data URL (PNG/JPEG) ; null = logo SODEFOR fourni avec l'application.
+  logoData                 String? @db.MediumText
+  qrLogoEnabled            Boolean @default(true)
+}
+
+/// Types de réunion paramétrables ; Meeting.type contient le code.
+model MeetingTypeOption {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.VarChar(40)
+  label     String
+  color     String   @default("#14532d")
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Paramétrage des modèles PDF (listes et affiche QR) ; les options propres à chaque modèle sont en JSON.
+model PdfTemplate {
+  id          String   @id @default(cuid())
+  kind        String   @unique @db.VarChar(40)
+  title       String
+  subtitle    String?
+  headerNote  String?
+  footerText  String?  @db.Text
+  accentColor String   @default("#14532d")
+  options     Json?
+  updatedAt   DateTime @updatedAt
+  updatedById String?
 }
 
 model Meeting {
@@ -135,7 +172,7 @@ model Meeting {
   internalRef          String        @unique
   slug                 String        @unique
   description          String?       @db.Text
-  type                 MeetingType   @default(COMITE)
+  type                 String        @default("COMITE") @db.VarChar(40)
   location             String?
   videoConferenceUrl   String?
   startsAt             DateTime
@@ -154,9 +191,19 @@ model Meeting {
   active               Boolean       @default(true)
   internalNotes        String?       @db.Text
   createdById          String
+  /// Secrétaire de séance affecté : seul habilité (avec les administrateurs) à gérer les présences.
+  secretaryId          String?
   updatedById          String?
   closedAt             DateTime?
   closedById           String?
+  autoClosed           Boolean       @default(false)
+  /// Dernière réouverture après clôture : la clôture automatique laisse un délai de correction.
+  reopenedAt           DateTime?
+  /// Date d'anonymisation des données personnelles (durée de conservation écoulée).
+  purgedAt             DateTime?
+  /// Incrémentée à chaque modification de la liste des présences (sous verrou de ligne) : une liste
+  /// officielle générée pour une version antérieure est périmée.
+  contentVersion       Int           @default(0)
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
   legacyPublicationId  Int?
@@ -164,6 +211,7 @@ model Meeting {
   legacySha2           String?
 
   createdBy   User               @relation("MeetingCreator", fields: [createdById], references: [id])
+  secretary   User?              @relation("MeetingSecretary", fields: [secretaryId], references: [id])
   updatedBy   User?              @relation("MeetingUpdater", fields: [updatedById], references: [id])
   closedBy    User?              @relation("MeetingCloser", fields: [closedById], references: [id])
   attendances Attendance[]
@@ -172,7 +220,10 @@ model Meeting {
   guests      ExpectedGuest[]
 
   @@index([status, startsAt])
-  @@index([createdById])
+  @@index([startsAt])
+  @@index([updatedAt])
+  @@index([createdById, startsAt])
+  @@index([secretaryId, startsAt])
 }
 
 model ExpectedGuest {
@@ -208,16 +259,22 @@ model Attendance {
   phoneNormalized    String?
   nameKey            String
   // Renseignées uniquement pour une présence ACTIVE : les index uniques bloquent les doublons concurrents.
+  // Le nom seul n'est pas unique (homonymes) : il sert à signaler un doublon probable.
   activeEmailKey     String?
   activePhoneKey     String?
   activeNameKey      String?
   activeUserKey      String?
+  suspectedDuplicate Boolean          @default(false)
   signatureObjectKey String?
   signatureHash      String?
   signatureMime      String?
   signatureSize      Int?
   checkInAt          DateTime         @default(now())
   checkInMethod      CheckInMethod    @default(QR_CODE)
+  /// Accord du participant pour figurer sur la liste publique de la réunion.
+  publicListConsent  Boolean          @default(false)
+  /// Motif d'une saisie manuelle dérogeant aux règles de la réunion (externe sur réunion interne…).
+  manualReason       String?          @db.Text
   status             AttendanceStatus @default(ACTIVE)
   cancelledAt        DateTime?
   cancelledById      String?
@@ -241,8 +298,10 @@ model Attendance {
   @@index([meetingId, userId])
   @@unique([meetingId, activeEmailKey])
   @@unique([meetingId, activePhoneKey])
-  @@unique([meetingId, activeNameKey])
   @@unique([meetingId, activeUserKey])
+  @@index([meetingId, activeNameKey])
+  @@index([signatureObjectKey])
+  @@index([status, checkInAt])
 }
 
 model AttendanceChange {
@@ -270,6 +329,7 @@ model MeetingQrToken {
   createdAt  DateTime    @default(now())
 
   @@index([meetingId, type])
+  @@index([type, validUntil])
 }
 
 model AuditLog {
@@ -279,6 +339,8 @@ model AuditLog {
   action     String
   entity     String
   entityId   String
+  /// Réunion concernée (réunion, présence ou document) : historique et péremption des listes sans balayage.
+  meetingId  String?
   beforeData Json?
   afterData  Json?
   ipAddress  String?
@@ -287,7 +349,9 @@ model AuditLog {
 
   @@index([entity, entityId])
   @@index([createdAt])
-  @@index([actorId])
+  @@index([actorId, createdAt])
+  @@index([entity, createdAt])
+  @@index([meetingId, createdAt])
 }
 
 model GeneratedDocument {
@@ -302,8 +366,17 @@ model GeneratedDocument {
   generatedById String?
   generatedBy   User?        @relation(fields: [generatedById], references: [id])
   generatedAt   DateTime     @default(now())
+  participantCount Int?
+  correctionNote   String?   @db.Text
+  supersededAt     DateTime?
+  /// Numéro de liste officielle, unique par réunion (null pour les autres documents).
+  officialVersion  Int?
+  /// Version du contenu de la réunion figée dans ce document.
+  contentVersion   Int       @default(0)
 
+  @@unique([meetingId, officialVersion])
   @@index([meetingId, type])
+  @@index([objectKey])
 }
 
 model Structure {

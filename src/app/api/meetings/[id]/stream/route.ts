@@ -1,29 +1,76 @@
-import { auth } from "@/lib/auth";
+import { canAccessMeeting, requireMeetingApi } from "@/lib/meeting-access";
+import { prisma } from "@/lib/prisma";
 import { meetingChannel, subscribe } from "@/lib/realtime";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return new Response("Non authentifié", { status: 401 });
-  }
+/** Hors du contexte de la requête initiale : relecture directe du compte et de la réunion. */
+async function stillAuthorized(userId: string, meetingId: string, sessionVersion: number) {
+  const [user, meeting] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { id: true, role: true, active: true, sessionVersion: true } }),
+    prisma.meeting.findUnique({ where: { id: meetingId }, select: { createdById: true, secretaryId: true } }),
+  ]);
+  // Déconnexion forcée (mot de passe changé, sessions révoquées) : le flux ouvert est coupé aussi.
+  if (!user?.active || user.sessionVersion !== sessionVersion) return false;
+  return Boolean(meeting && canAccessMeeting(user, meeting, "read"));
+}
+
+const HEARTBEAT_MS = 15_000;
+/** Droits revérifiés régulièrement : un compte désactivé ou retiré de la réunion cesse de recevoir le flux. */
+const REAUTHORIZE_MS = 60_000;
+/** Le navigateur se reconnecte seul (EventSource) : une durée bornée évite les connexions orphelines. */
+const MAX_LIFETIME_MS = 60 * 60_000;
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const gate = await requireMeetingApi(id, "read");
+  if (gate.error) return gate.error;
+  const userId = gate.session.user.id;
+  // La session vient d'être validée contre la base : sa version courante sert de référence.
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { sessionVersion: true } });
+  const sessionVersion = account?.sessionVersion ?? 0;
   const encoder = new TextEncoder();
   let cleanup = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
-      const send = (payload: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      let closed = false;
+      const write = (chunk: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          cleanup();
+        }
       };
+      const send = (payload: unknown) => write(`data: ${JSON.stringify(payload)}\n\n`);
       send({ type: "ready" });
       const unsubscribe = subscribe(meetingChannel(id), send);
-      const heartbeat = setInterval(() => {
-        controller.enqueue(encoder.encode(`: ping\n\n`));
-      }, 15000);
+      const heartbeat = setInterval(() => write(`: ping\n\n`), HEARTBEAT_MS);
+      const reauthorize = setInterval(() => {
+        void stillAuthorized(userId, id, sessionVersion)
+          .then((ok) => {
+            if (!ok) close();
+          })
+          .catch(() => undefined);
+      }, REAUTHORIZE_MS);
+      const lifetime = setTimeout(() => close(), MAX_LIFETIME_MS);
       cleanup = () => {
+        if (closed) return;
+        closed = true;
         clearInterval(heartbeat);
+        clearInterval(reauthorize);
+        clearTimeout(lifetime);
         unsubscribe();
+        request.signal.removeEventListener("abort", cleanup);
       };
+      const close = () => {
+        cleanup();
+        try {
+          controller.close();
+        } catch {
+          // déjà fermé
+        }
+      };
+      request.signal.addEventListener("abort", cleanup);
     },
     cancel() {
       cleanup();

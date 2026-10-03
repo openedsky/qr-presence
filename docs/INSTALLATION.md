@@ -16,12 +16,17 @@ cd qr-presence2
 cp .env.example .env
 npm install
 npx prisma generate
-npx prisma db push
+npx prisma migrate deploy
 npm run db:seed
 npm run dev
 ```
 
-Ouvrir `http://localhost:3000`.
+Ouvrir `http://localhost:3000`. Le mot de passe provisoire du premier super administrateur est écrit par le seed dans
+`storage/.secrets/admin-temporary-password.txt` (ou défini par `INITIAL_ADMIN_PASSWORD`) ; il expire après 7 jours et
+doit être changé à la première connexion.
+
+Base créée auparavant avec `prisma db push` : la marquer une fois comme à jour avec
+`npx prisma migrate resolve --applied 0_init` (le conteneur Docker le fait automatiquement).
 
 ## Installation Docker locale
 
@@ -31,9 +36,11 @@ docker compose up -d --build
 
 Services :
 
-- Application : http://localhost:3000
-- API S3 (SeaweedFS) : http://localhost:8333
-- MariaDB : localhost:3307
+- Application : http://127.0.0.1:3000
+- API S3 (SeaweedFS) : http://127.0.0.1:8333
+- MariaDB : 127.0.0.1:3307
+
+Ports publiés sur la boucle locale uniquement ; identifiants de service fixes : ce compose n'est pas destiné à la production.
 
 ## Structure utile
 

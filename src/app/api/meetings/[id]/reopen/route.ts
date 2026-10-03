@@ -1,15 +1,8 @@
-import { NextResponse } from "next/server";
-import { requireApiPermission } from "@/lib/api-auth";
-import { transitionMeeting } from "@/server/services/meetings";
+import { transitionRoute } from "@/lib/meeting-transition-route";
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const gate = await requireApiPermission("meetings.reopen");
-  if (gate.error) return gate.error;
   const { id } = await params;
-  try {
-    await transitionMeeting(id, "OUVERTE", gate.session.user.id);
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Erreur" }, { status: 400 });
-  }
+  return transitionRoute(id, "reopen", "OUVERTE", ({ status }) =>
+    status === "CLOTUREE" ? null : "Seule une réunion clôturée peut être rouverte.",
+  );
 }

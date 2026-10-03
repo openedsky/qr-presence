@@ -1,12 +1,21 @@
 import { prisma } from "@/lib/prisma";
+import { DEFAULT_PRIVACY_NOTICE } from "@/lib/privacy-notice";
+import { invalidateMemo, memo } from "@/lib/memo-cache";
 
-const DEFAULT_PRIVACY =
-  "Les informations collectées (identité, fonction, structure, coordonnées et signature) sont destinées exclusivement à l'établissement des listes de présence des réunions SODEFOR. Elles sont accessibles aux seuls agents habilités, conservées pour la durée paramétrée, et ne sont pas publiées sur la page publique d'émargement.";
+const SETTINGS_TTL_MS = 30_000;
 
-export async function getSettings() {
-  const existing = await prisma.organizationSetting.findFirst();
-  if (existing) return existing;
-  return prisma.organizationSetting.create({
-    data: { privacyNotice: DEFAULT_PRIVACY },
+/** Paramètres sans le logo (volumineux) : lus à chaque page, notamment pour le thème. */
+export function getSettings() {
+  return memo("settings", SETTINGS_TTL_MS, async () => {
+    const existing = await prisma.organizationSetting.findFirst({ omit: { logoData: true } });
+    if (existing) return existing;
+    return prisma.organizationSetting.create({
+      data: { privacyNotice: DEFAULT_PRIVACY_NOTICE },
+      omit: { logoData: true },
+    });
   });
+}
+
+export function invalidateSettings() {
+  invalidateMemo("settings");
 }

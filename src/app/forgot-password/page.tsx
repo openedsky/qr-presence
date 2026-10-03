@@ -11,7 +11,8 @@ export default function ForgotPasswordPage() {
           <h1 className="font-display text-2xl text-forest-deep">Mot de passe oublié</h1>
           <p className="mt-2 text-sm text-muted">
             Pour des raisons de sécurité, la réinitialisation est effectuée par un super
-            administrateur. Contactez la DSI SODEFOR.
+            administrateur. Contactez la DSI SODEFOR : après vérification de votre identité, elle
+            vous remettra un mot de passe provisoire, à remplacer dès votre première connexion.
           </p>
           <Link href="/login" className="mt-6 inline-block text-sm font-semibold text-forest">
             Retour à la connexion
