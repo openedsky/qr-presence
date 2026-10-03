@@ -99,7 +99,7 @@ jobs:
       - name: Build de l'image
         run: docker build --build-arg NEXT_PUBLIC_APP_URL=https://presence.sodefor.ci -t sodefor-presences:ci .
       - name: Analyse de vulnÃ©rabilitÃ©s de l'image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sodefor-presences:ci
           severity: CRITICAL,HIGH
