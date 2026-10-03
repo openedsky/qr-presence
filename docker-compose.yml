@@ -73,7 +73,7 @@ services:
     logging: *logging
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: unless-stopped
     # Toutes les clés ont une échéance : sous pression mémoire, les plus proches de l'expiration partent d'abord.
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
