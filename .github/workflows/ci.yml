@@ -80,7 +80,14 @@ jobs:
         run: |
           mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS sodefor_shadow"
           npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma \
-            --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
+            --shadow-database-url "$SHADOW_DATABASE_URL" --script > drift.sql
+          # MariaDB stocke JSON en LONGTEXT : Prisma signale à tort ces colonnes JSON comme modifiées.
+          PATTERN='^[[:space:]]*$|^--|^(ALTER TABLE `[A-Za-z0-9_]+` )?[[:space:]]*MODIFY `[A-Za-z0-9_]+` JSON( NOT)? NULL[,;]$'
+          if grep -vqE "$PATTERN" drift.sql; then
+            echo "Le schéma Prisma diverge des migrations : créer une migration."
+            cat drift.sql
+            exit 1
+          fi
       - run: npm run db:seed
       - run: npx next build
       - run: npx playwright install --with-deps chromium
@@ -99,7 +106,7 @@ jobs:
       - name: Build de l'image
         run: docker build --build-arg NEXT_PUBLIC_APP_URL=https://presence.sodefor.ci -t sodefor-presences:ci .
       - name: Analyse de vulnÃ©rabilitÃ©s de l'image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sodefor-presences:ci
           severity: CRITICAL,HIGH
