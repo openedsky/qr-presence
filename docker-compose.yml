@@ -88,7 +88,7 @@ services:
 
   # Stockage objet compatible S3 (signatures, PDF). Identité limitée au seul bucket de l'application.
   storage:
-    image: chrislusf/seaweedfs:4.47
+    image: chrislusf/seaweedfs:4.48
     restart: unless-stopped
     environment:
       S3_ACCESS_KEY: sodefor
