@@ -5,13 +5,8 @@ export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   const { checkEnvironment } = await import("./server/env-check");
   checkEnvironment();
-  const { startScheduler, stopScheduler } = await import("./server/jobs");
+  const { startScheduler } = await import("./server/jobs");
   startScheduler();
-  // Arrêt du conteneur : plus de nouvelle tâche planifiée, connexions à la base fermées proprement.
-  process.once("SIGTERM", () => {
-    stopScheduler();
-    void import("./lib/prisma").then(({ prisma }) => prisma.$disconnect()).catch(() => undefined);
-  });
 }
 
 /** Toute erreur serveur non gérée est journalisée en JSON (sans les en-têtes, qui peuvent contenir des cookies). */

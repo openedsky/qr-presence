@@ -9,9 +9,14 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Aucune base n'est contactÃ©e : valeurs factices exigÃ©es par prisma validate et next build.
+    env:
+      DATABASE_URL: mysql://build:build@127.0.0.1:3306/build
+      AUTH_SECRET: ci-build-placeholder-ci-build-placeholder
+      STORAGE_DRIVER: local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -21,14 +26,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
-      - name: Vulnérabilités des dépendances de production
+      - name: VulnÃ©rabilitÃ©s des dÃ©pendances de production
         run: npm audit --omit=dev --audit-level=high
       - name: Build
         run: npx next build
-        env:
-          DATABASE_URL: mysql://build:build@127.0.0.1:3306/build
-          AUTH_SECRET: ci-build-placeholder-ci-build-placeholder
-          STORAGE_DRIVER: local
 
   e2e:
     runs-on: ubuntu-latest
@@ -66,8 +67,8 @@ jobs:
       E2E_PASSWORD: E2e-Demo-Password-2026!
       E2E_DEMO_TOKEN: e2eDemoQrTokenForContinuousInteg
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -75,7 +76,7 @@ jobs:
       - run: npx prisma generate
       - name: Migrations sur base neuve
         run: npx prisma migrate deploy
-      - name: Schéma et migrations alignés
+      - name: SchÃ©ma et migrations alignÃ©s
         run: |
           mysql -h127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS sodefor_shadow"
           npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma \
@@ -94,13 +95,14 @@ jobs:
     needs: checks
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build de l'image
         run: docker build --build-arg NEXT_PUBLIC_APP_URL=https://presence.sodefor.ci -t sodefor-presences:ci .
-      - name: Analyse de vulnérabilités de l'image
+      - name: Analyse de vulnÃ©rabilitÃ©s de l'image
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: sodefor-presences:ci
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+

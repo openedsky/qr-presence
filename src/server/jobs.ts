@@ -274,5 +274,10 @@ export function startScheduler() {
     setInterval(() => void autoClose(), AUTO_CLOSE_EVERY_MS).unref(),
     setInterval(() => void purge(), PURGE_EVERY_MS).unref(),
   );
+  // Arrêt du conteneur : plus de nouvelle tâche planifiée, connexions à la base fermées proprement.
+  process.once("SIGTERM", () => {
+    stopScheduler();
+    void prisma.$disconnect().catch(() => undefined);
+  });
   logger.info("jobs.started", { autoCloseMinutes: AUTO_CLOSE_EVERY_MS / 60_000, purgeHours: PURGE_EVERY_MS / 3600_000 });
 }
