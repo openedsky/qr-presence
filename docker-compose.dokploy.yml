@@ -65,7 +65,7 @@ services:
     logging: *logging
 
   mariadb:
-    image: mariadb:11.4
+    image: mariadb:12.2
     restart: unless-stopped
     environment:
       TZ: Africa/Abidjan
@@ -137,7 +137,7 @@ services:
 
   # Sauvegarde quotidienne de la base (rotation BACKUP_RETENTION_DAYS). Voir docs/BACKUP.md pour l'externalisation.
   backup:
-    image: mariadb:11.4
+    image: mariadb:12.2
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/scripts/backup.sh"]
     environment:

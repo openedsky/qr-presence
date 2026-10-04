@@ -52,7 +52,7 @@ services:
     logging: *logging
 
   mariadb:
-    image: mariadb:11.4
+    image: mariadb:12.2
     restart: unless-stopped
     environment:
       TZ: Africa/Abidjan
