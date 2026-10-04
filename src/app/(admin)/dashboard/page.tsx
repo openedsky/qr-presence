@@ -1,4 +1,4 @@
-import { CalendarDays, CalendarRange, PlayCircle, Users } from "lucide-react";
+import { BarChart3, CalendarDays, CalendarRange, PlayCircle, Users } from "lucide-react";
 import { Prisma } from "@prisma/client";
 import { Card, PageHeader, StatCard } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
@@ -8,11 +8,18 @@ import { meetingWhereForRole } from "@/server/services/meetings";
 import { STATUS_LABELS, STATUS_TONES, isLive } from "@/lib/meeting-status";
 import { formatDateTime } from "@/lib/utils";
 import { actionLabel } from "@/lib/audit-format";
+import { bucketLabel, periodBuckets, resolveDashboardPeriod } from "@/lib/dashboard-period";
+import { PeriodFilter } from "./period-filter";
 import Link from "next/link";
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ p?: string; from?: string; to?: string }>;
+}) {
   const session = await requireSession();
   const { role, id: userId } = session.user;
+  const period = resolveDashboardPeriod(await searchParams);
   const scope = (extra: Prisma.MeetingWhereInput = {}) => meetingWhereForRole(role, userId, extra);
   const perimeter = meetingScope(role);
   const scopeSql =
@@ -22,25 +29,20 @@ export default async function DashboardPage() {
         ? Prisma.sql`AND m.secretaryId = ${userId}`
         : Prisma.empty;
   const canReadAudit = hasPermission(role, "audit.read");
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date();
-  endOfDay.setHours(23, 59, 59, 999);
-  const startOfMonth = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1);
+  const inPeriod = { gte: period.from, lt: period.to };
+  const bucketFormat = period.bucket === "day" ? "%Y-%m-%d" : "%Y-%m";
 
   const [
-    meetingsToday,
+    meetingsInPeriod,
     meetingsLive,
-    participantsToday,
-    meetingsMonth,
+    participantsInPeriod,
+    attendancesOfPeriodMeetings,
     latestMeetings,
     upcoming,
     recentAudit,
-    dailyCounts,
+    bucketCounts,
   ] = await Promise.all([
-    prisma.meeting.count({
-      where: scope({ startsAt: { gte: startOfDay, lte: endOfDay } }),
-    }),
+    prisma.meeting.count({ where: scope({ startsAt: inPeriod }) }),
     prisma.meeting
       .findMany({
         where: scope({ status: { in: ["OUVERTE", "EN_COURS"] } }),
@@ -55,13 +57,15 @@ export default async function DashboardPage() {
       })
       .then((rows) => rows.filter((row) => isLive(row)).length),
     prisma.attendance.count({
-      where: { status: "ACTIVE", checkInAt: { gte: startOfDay, lte: endOfDay }, meeting: scope() },
+      where: { status: "ACTIVE", checkInAt: inPeriod, meeting: scope() },
     }),
-    prisma.meeting.count({ where: scope({ startsAt: { gte: startOfMonth } }) }),
+    prisma.attendance.count({
+      where: { status: "ACTIVE", meeting: scope({ startsAt: inPeriod }) },
+    }),
     prisma.meeting.findMany({
-      where: scope(),
+      where: scope({ startsAt: inPeriod }),
       take: 6,
-      orderBy: { updatedAt: "desc" },
+      orderBy: { startsAt: "desc" },
       include: {
         _count: { select: { attendances: { where: { status: "ACTIVE" } } } },
         createdBy: { select: { firstName: true, lastName: true } },
@@ -74,29 +78,33 @@ export default async function DashboardPage() {
     }),
     canReadAudit
       ? prisma.auditLog.findMany({
+          where: { createdAt: inPeriod },
           take: 8,
           orderBy: { createdAt: "desc" },
           include: { actor: { select: { firstName: true, lastName: true } } },
         })
       : Promise.resolve([]),
-    prisma.$queryRaw<{ day: Date; total: bigint }[]>`
-      SELECT DATE(a.checkInAt) as day, COUNT(*) as total
+    prisma.$queryRaw<{ bucket: string; total: bigint }[]>`
+      SELECT DATE_FORMAT(a.checkInAt, ${bucketFormat}) as bucket, COUNT(*) as total
       FROM Attendance a
       JOIN Meeting m ON m.id = a.meetingId
-      WHERE a.status = 'ACTIVE' AND a.checkInAt >= DATE_SUB(UTC_DATE(), INTERVAL 13 DAY)
+      WHERE a.status = 'ACTIVE' AND a.checkInAt >= ${period.from} AND a.checkInAt < ${period.to}
       ${scopeSql}
-      GROUP BY DATE(a.checkInAt)
-      ORDER BY day ASC
+      GROUP BY bucket
     `.catch(() => []),
   ]);
 
-  const max = Math.max(1, ...dailyCounts.map((d) => Number(d.total)));
+  const totals = new Map(bucketCounts.map((row) => [row.bucket, Number(row.total)]));
+  const chart = periodBuckets(period).map((key) => ({ key, total: totals.get(key) ?? 0 }));
+  const max = Math.max(1, ...chart.map((item) => item.total));
+  const labelEvery = Math.max(1, Math.ceil(chart.length / 14));
+  const average = meetingsInPeriod ? (attendancesOfPeriodMeetings / meetingsInPeriod).toFixed(1) : "0";
 
   const kpis = [
-    { label: "Réunions aujourd'hui", value: meetingsToday, icon: <CalendarDays className="h-5 w-5" />, tone: "forest" as const },
-    { label: "Réunions en cours", value: meetingsLive, icon: <PlayCircle className="h-5 w-5" />, tone: "sky" as const },
-    { label: "Participants aujourd'hui", value: participantsToday, icon: <Users className="h-5 w-5" />, tone: "gold" as const },
-    { label: "Réunions ce mois", value: meetingsMonth, icon: <CalendarRange className="h-5 w-5" />, tone: "rose" as const },
+    { label: "Réunions sur la période", value: meetingsInPeriod, icon: <CalendarDays className="h-5 w-5" />, tone: "forest" as const },
+    { label: "Réunions en cours", value: meetingsLive, icon: <PlayCircle className="h-5 w-5" />, tone: "sky" as const, hint: "En ce moment" },
+    { label: "Présences sur la période", value: participantsInPeriod, icon: <Users className="h-5 w-5" />, tone: "gold" as const },
+    { label: "Moyenne par réunion", value: average, icon: <BarChart3 className="h-5 w-5" />, tone: "rose" as const, hint: "Réunions de la période" },
   ];
 
   return (
@@ -105,27 +113,42 @@ export default async function DashboardPage() {
         title="Tableau de bord"
         subtitle="Pilotage des réunions, des émargements et de l'activité récente."
       />
+      <PeriodFilter
+        current={period.key}
+        fromInput={period.fromInput}
+        toInput={period.toInput}
+        label={period.label}
+        generatedAt={new Date().toISOString()}
+      />
       <div className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {kpis.map((kpi) => (
-          <StatCard key={kpi.label} label={kpi.label} value={kpi.value} icon={kpi.icon} tone={kpi.tone} />
+          <StatCard key={kpi.label} label={kpi.label} value={kpi.value} icon={kpi.icon} tone={kpi.tone} hint={kpi.hint} />
         ))}
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
         <Card>
-          <h2 className="font-display text-xl text-forest-deep">Présences — 14 derniers jours</h2>
-          <div className="mt-6 flex h-40 items-end gap-2">
-            {dailyCounts.length === 0 ? (
-              <p className="text-sm text-muted">Aucune donnée pour le moment.</p>
+          <h2 className="font-display text-xl text-forest-deep">
+            Présences {period.bucket === "day" ? "par jour" : "par mois"} — {period.label.toLowerCase()}
+          </h2>
+          <div className="mt-6 flex h-40 items-end gap-1">
+            {participantsInPeriod === 0 ? (
+              <p className="text-sm text-muted">Aucune présence sur la période.</p>
             ) : (
-              dailyCounts.map((day) => (
-                <div key={String(day.day)} className="flex flex-1 flex-col items-center gap-2">
-                  <div
-                    className="w-full rounded-t-lg bg-gradient-to-t from-forest to-leaf"
-                    style={{ height: `${(Number(day.total) / max) * 100}%` }}
-                  />
-                  <span className="text-[10px] text-muted">
-                    {new Date(day.day).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}
+              chart.map((item, index) => (
+                <div
+                  key={item.key}
+                  className="flex h-full flex-1 flex-col items-center justify-end gap-2"
+                  title={`${bucketLabel(item.key)} : ${item.total} présence${item.total > 1 ? "s" : ""}`}
+                >
+                  <div className="flex w-full flex-1 items-end">
+                    <div
+                      className="w-full rounded-t-lg bg-gradient-to-t from-forest to-leaf"
+                      style={{ height: `${(item.total / max) * 100}%`, minHeight: item.total ? 4 : 0 }}
+                    />
+                  </div>
+                  <span className={`h-3 text-[10px] text-muted ${index % labelEvery === 0 ? "" : "invisible"}`}>
+                    {bucketLabel(item.key)}
                   </span>
                 </div>
               ))
@@ -165,7 +188,7 @@ export default async function DashboardPage() {
 
       <div className={`mt-6 grid gap-6 ${canReadAudit ? "xl:grid-cols-2" : ""}`}>
         <Card>
-          <h2 className="font-display text-xl text-forest-deep">Dernières réunions</h2>
+          <h2 className="font-display text-xl text-forest-deep">Réunions de la période</h2>
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-muted">
@@ -193,11 +216,12 @@ export default async function DashboardPage() {
                 ))}
               </tbody>
             </table>
+            {latestMeetings.length === 0 ? <p className="py-3 text-sm text-muted">Aucune réunion sur la période.</p> : null}
           </div>
         </Card>
         {canReadAudit ? (
           <Card>
-            <h2 className="font-display text-xl text-forest-deep">Activité récente</h2>
+            <h2 className="font-display text-xl text-forest-deep">Activité sur la période</h2>
             <ul className="mt-4 space-y-3 text-sm">
               {recentAudit.map((log) => (
                 <li key={log.id} className="rounded-xl bg-sand p-3">
@@ -207,6 +231,7 @@ export default async function DashboardPage() {
                   </p>
                 </li>
               ))}
+              {recentAudit.length === 0 ? <li className="text-muted">Aucune activité sur la période.</li> : null}
             </ul>
           </Card>
         ) : null}
