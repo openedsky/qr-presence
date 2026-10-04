@@ -42,7 +42,10 @@ ENV NODE_ENV=production \
     TZ=UTC \
     STORAGE_LOCAL_DIR=/data/storage
 
-RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
+# npm, yarn et corepack ne servent qu'au build : retirés de l'image d'exécution (surface d'attaque, CVE).
+RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn* \
+       /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

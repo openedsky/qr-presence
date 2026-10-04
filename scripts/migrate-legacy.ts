@@ -16,6 +16,7 @@ function confirmationCode() {
   return `SDF-${randomBytes(4).toString("hex").toUpperCase()}`;
 }
 
+/** Les deux générations de l'intranet coexistent : lieu/lieu_evenement, actif/is_active, ferme/is_reunion_closed. */
 type LegacyMeeting = {
   id: number;
   titre: string;
@@ -23,15 +24,23 @@ type LegacyMeeting = {
   contenu?: string | null;
   type_publication?: string | null;
   lieu?: string | null;
+  lieu_evenement?: string | null;
   url_visio?: string | null;
   date_debut?: Date | null;
   date_fin?: Date | null;
   actif?: number | null;
+  is_active?: number | boolean | null;
   ferme?: number | null;
+  is_reunion_closed?: number | boolean | null;
   user_id?: number | null;
   sha1?: string | null;
   sha2?: string | null;
 };
+
+function flag(...values: (number | boolean | null | undefined)[]) {
+  const value = values.find((item) => item !== null && item !== undefined);
+  return value === undefined ? undefined : Boolean(Number(value));
+}
 
 type LegacyPresence = {
   id: number;
@@ -46,6 +55,7 @@ type LegacyPresence = {
   contact?: string | null;
   user_id?: number | null;
   actif?: number | null;
+  is_active?: number | boolean | null;
   created_at?: Date | null;
 };
 
@@ -67,53 +77,77 @@ async function main() {
       where: { legacyPublicationId: row.id },
     });
     if (existing) continue;
-    const meeting = await target.meeting.create({
-      data: {
-        title: row.titre || "Réunion migrée",
-        slug: `${row.slug || "reunion"}-legacy-${row.id}`,
-        internalRef: `LEG-${row.id}`,
-        description: row.contenu,
-        location: row.lieu,
-        videoConferenceUrl: row.url_visio,
-        startsAt: row.date_debut ?? new Date(),
-        endsAt: row.date_fin,
-        status: row.ferme ? "CLOTUREE" : row.actif ? "OUVERTE" : "PLANIFIEE",
-        createdById: admin.id,
-        legacyPublicationId: row.id,
-        legacySha1: row.sha1,
-        legacySha2: row.sha2,
-      },
-    });
-
+    const startsAt = row.date_debut ?? new Date();
+    const endsAt = row.date_fin ?? null;
+    // Réunion passée : clôturée à sa date de fin (sinon la clôture automatique et les PDF officiels partiraient en masse).
+    const past = (endsAt ?? startsAt).getTime() < Date.now();
+    const closed = flag(row.ferme, row.is_reunion_closed) || past;
     const presences = await legacy.$queryRaw<LegacyPresence[]>`
       SELECT * FROM presence WHERE reunion_id = ${row.id}
     `;
-    for (const presence of presences) {
-      const lastName = (presence.nom || "INCONNU").toUpperCase();
-      const firstNames = presence.prenom || "Inconnu";
-      await target.attendance.create({
+    // Une réunion et ses présences forment un tout : un échec ne laisse pas de réunion à moitié reprise.
+    const meeting = await target.$transaction(async (tx) => {
+      const created = await tx.meeting.create({
         data: {
-          meetingId: meeting.id,
-          lastName,
-          firstNames,
-          civility: presence.civilite === "Mme" ? "MME" : presence.civilite === "Mlle" ? "MLLE" : "M",
-          gender: presence.sexe === "F" ? "F" : "M",
-          jobTitle: presence.fonction || "Non renseigné",
-          organization: presence.structure || "Non renseigné",
-          email: presence.email,
-          phone: presence.contact,
-          emailNormalized: normalizeEmail(presence.email),
-          phoneNormalized: normalizePhone(presence.contact),
-          nameKey: nameKey(lastName, firstNames),
-          confirmationCode: `LEG-${presence.id}-${confirmationCode()}`,
-          checkInAt: presence.created_at ?? new Date(),
-          checkInMethod: "QR_CODE",
-          status: presence.actif === 0 ? "ANNULEE" : "ACTIVE",
-          legacyPresenceId: presence.id,
-          ipHash: createHash("sha256").update(`legacy:${presence.id}`).digest("hex"),
+          title: row.titre || "Réunion migrée",
+          slug: `${row.slug || "reunion"}-legacy-${row.id}`,
+          internalRef: `LEG-${row.id}`,
+          description: row.contenu,
+          location: row.lieu ?? row.lieu_evenement,
+          videoConferenceUrl: row.url_visio,
+          startsAt,
+          endsAt,
+          status: closed ? "CLOTUREE" : flag(row.actif, row.is_active) ? "OUVERTE" : "PLANIFIEE",
+          closedAt: closed ? (endsAt ?? startsAt) : null,
+          createdById: admin.id,
+          legacyPublicationId: row.id,
+          legacySha1: row.sha1,
+          legacySha2: row.sha2,
         },
       });
-    }
+
+      // Clés de doublon (uniques par réunion) : seule la première présence active d'un email/téléphone les porte.
+      const seenEmails = new Set<string>();
+      const seenPhones = new Set<string>();
+      for (const presence of presences) {
+        const lastName = (presence.nom || "INCONNU").toUpperCase();
+        const firstNames = presence.prenom || "Inconnu";
+        const active = flag(presence.actif, presence.is_active) !== false;
+        const emailNormalized = normalizeEmail(presence.email);
+        const phoneNormalized = normalizePhone(presence.contact);
+        const key = nameKey(lastName, firstNames);
+        const emailKey = active && emailNormalized && !seenEmails.has(emailNormalized) ? emailNormalized : null;
+        const phoneKey = active && phoneNormalized && !seenPhones.has(phoneNormalized) ? phoneNormalized : null;
+        if (emailKey) seenEmails.add(emailKey);
+        if (phoneKey) seenPhones.add(phoneKey);
+        await tx.attendance.create({
+          data: {
+            meetingId: created.id,
+            lastName,
+            firstNames,
+            civility: presence.civilite === "Mme" ? "MME" : presence.civilite === "Mlle" ? "MLLE" : "M",
+            gender: presence.sexe === "F" ? "F" : "M",
+            jobTitle: presence.fonction || "Non renseigné",
+            organization: presence.structure || "Non renseigné",
+            email: presence.email,
+            phone: presence.contact,
+            emailNormalized,
+            phoneNormalized,
+            nameKey: key,
+            activeEmailKey: emailKey,
+            activePhoneKey: phoneKey,
+            activeNameKey: active ? key : null,
+            confirmationCode: `LEG-${presence.id}-${confirmationCode()}`,
+            checkInAt: presence.created_at ?? new Date(),
+            checkInMethod: "QR_CODE",
+            status: active ? "ACTIVE" : "ANNULEE",
+            legacyPresenceId: presence.id,
+            ipHash: createHash("sha256").update(`legacy:${presence.id}`).digest("hex"),
+          },
+        });
+      }
+      return created;
+    }, { timeout: 120_000 });
     console.log(`Migré publication #${row.id} → ${meeting.internalRef} (${presences.length} présences)`);
   }
 
