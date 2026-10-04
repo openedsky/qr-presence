@@ -2,10 +2,10 @@ import { PDFDocument, StandardFonts, degrees, rgb, type PDFFont } from "pdf-lib"
 import QRCode from "qrcode";
 import ExcelJS from "exceljs";
 import { createHash, randomUUID } from "crypto";
-import { Prisma, type Attendance, type GeneratedDocument, type Meeting, type User } from "@prisma/client";
+import { type Attendance, type GeneratedDocument, type Meeting, type User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { deleteObject, getObjectBuffer, meetingObjectKey, putObject } from "@/lib/storage";
-import { cacheDelIfEquals, cacheSetNx } from "@/lib/redis";
+import { cacheDelIfEquals, cacheGet, cacheSet, cacheSetNx } from "@/lib/redis";
 import { writeAudit } from "@/lib/audit";
 import { mapWithLimit } from "@/lib/concurrency";
 import { imageWithinLimits, SIGNATURE_LIMITS } from "@/lib/image-size";
@@ -16,6 +16,7 @@ import { verifyDocumentUrl } from "@/lib/tokens";
 import { getSettings } from "./settings";
 import { getTemplate, hexToRgb01, type ListColumn, type ResolvedTemplate, type TemplateKind } from "./pdf-templates";
 import { LIST_COLUMNS } from "@/lib/validators";
+import { ATTENDANCE_ORDER } from "./attendances";
 
 const LIST_ORDER = LIST_COLUMNS;
 
@@ -322,17 +323,17 @@ export async function renderList(input: {
   return Buffer.from(await pdf.save());
 }
 
-// Les notes internes ne figurent pas sur la liste : les modifier ne justifie pas une nouvelle version.
-const LIST_NEUTRAL_FIELDS = new Set(["internalNotes", "updatedById"]);
+/** Informations de la réunion imprimées sur les listes : seules elles périment la liste officielle. */
+export const PRINTED_MEETING_FIELDS = new Set(["title", "internalRef", "startsAt", "location"]);
 
 type ChangeLog = { entity: string; action: string; afterData: unknown };
 
-/** Un changement des informations de la réunion (objet, date, lieu…) périme aussi la liste. */
+/** Un changement des informations imprimées de la réunion (objet, date, lieu…) périme aussi la liste. */
 function isListRelevantMeetingUpdate(log: ChangeLog) {
   if (log.entity !== "Meeting") return false;
   const after = log.afterData;
   if (!after || typeof after !== "object" || Array.isArray(after)) return true;
-  return Object.keys(after).some((field) => !LIST_NEUTRAL_FIELDS.has(field));
+  return Object.keys(after).some((field) => PRINTED_MEETING_FIELDS.has(field));
 }
 
 /** Modifications du contenu d'une liste depuis `since` (journal indexé par réunion). */
@@ -405,12 +406,30 @@ export async function isOfficialListOutdated(
   return meeting ? isDocumentStale(document, meeting.contentVersion) : false;
 }
 
+/** Rendus PDF simultanés par instance : au-delà, la boucle d'événements et la mémoire saturent (clôtures en rafale). */
+const MAX_CONCURRENT_RENDERS = 2;
+let activeRenders = 0;
+const renderWaiters: (() => void)[] = [];
+
+async function withRenderSlot<T>(job: () => Promise<T>): Promise<T> {
+  if (activeRenders >= MAX_CONCURRENT_RENDERS) await new Promise<void>((resolve) => renderWaiters.push(resolve));
+  activeRenders += 1;
+  try {
+    return await job();
+  } finally {
+    activeRenders -= 1;
+    renderWaiters.shift()?.();
+  }
+}
+
+/** Après un échec, la réunion est mise de côté une heure : des échecs répétés ne monopolisent pas chaque passe. */
+const RECONCILE_BACKOFF_SECONDS = 3600;
+
 /**
  * Réunions clôturées ou archivées dont la liste officielle ne reflète plus le contenu (minuteur perdu au
- * redémarrage, échec de génération…) : la liste est rétablie. Appelé périodiquement et avant la purge.
+ * redémarrage, échec de génération…) : la liste est rétablie. Appelé périodiquement.
  */
-export async function reconcileOfficialLists(meetingIds?: string[], limit = 10) {
-  if (meetingIds?.length === 0) return 0;
+export async function reconcileOfficialLists(limit = 10) {
   // Sans liste officielle : seules les clôtures récentes (les réunions héritées n'en ont jamais eu).
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     SELECT m.id FROM Meeting m
@@ -420,23 +439,37 @@ export async function reconcileOfficialLists(meetingIds?: string[], limit = 10) 
     ) d ON d.meetingId = m.id
     WHERE m.status IN ('CLOTUREE', 'ARCHIVEE') AND m.purgedAt IS NULL
       AND ((d.v IS NOT NULL AND m.contentVersion > d.v) OR (d.v IS NULL AND m.closedAt > UTC_TIMESTAMP() - INTERVAL 30 DAY))
-      ${meetingIds ? Prisma.sql`AND m.id IN (${Prisma.join(meetingIds)})` : Prisma.empty}
     ORDER BY m.updatedAt ASC
-    LIMIT ${limit}`;
+    LIMIT ${limit * 5}`;
   let refreshed = 0;
+  let attempted = 0;
   for (const { id } of rows) {
-    if (refreshTimers.has(id)) continue;
-    const meeting = await prisma.meeting.findUnique({ where: { id } });
-    if (!meeting) continue;
-    try {
-      const result = await generateListDocument({ meeting, actor: null, kind: "official" });
-      if (!result.reused) refreshed += 1;
-    } catch (error) {
-      if (error instanceof DocumentBusyError) continue;
-      logger.error("document.reconcile_failed", { meetingId: id, error: error instanceof Error ? error.message : String(error) });
-    }
+    if (attempted >= limit) break;
+    if (refreshTimers.has(id) || (await cacheGet(`reconcile-backoff:${id}`))) continue;
+    attempted += 1;
+    const outcome = await establishOfficialList(id);
+    if (outcome === "refreshed") refreshed += 1;
+    if (outcome === "failed") await cacheSet(`reconcile-backoff:${id}`, "1", RECONCILE_BACKOFF_SECONDS);
   }
   return refreshed;
+}
+
+/**
+ * Établit (ou confirme) la liste officielle à jour d'une réunion gelée, y compris sans liste antérieure.
+ * Utilisé avant la purge : les données ne doivent disparaître qu'une fois la liste probante archivée.
+ */
+export async function establishOfficialList(meetingId: string): Promise<"reused" | "refreshed" | "failed"> {
+  const meeting = await prisma.meeting.findUnique({ where: { id: meetingId } });
+  if (!meeting || !isFrozen(meeting.status)) return "failed";
+  try {
+    const result = await generateListDocument({ meeting, actor: null, kind: "official" });
+    return result.reused ? "reused" : "refreshed";
+  } catch (error) {
+    if (!(error instanceof DocumentBusyError)) {
+      logger.error("document.reconcile_failed", { meetingId, error: error instanceof Error ? error.message : String(error) });
+    }
+    return "failed";
+  }
 }
 
 const REFRESH_DELAY_MS = 20_000;
@@ -524,6 +557,11 @@ async function buildListDocument(input: { meeting: Meeting; actor?: User | null;
     );
   }
 
+  if (kind === "official" && !isFrozen(meeting.status)) {
+    // Rouverte entre la demande et la génération : une liste « officielle » sans filigrane serait trompeuse.
+    throw new DocumentUnavailableError("La réunion a été rouverte : la liste officielle sera établie à sa clôture.");
+  }
+
   if (kind === "official") {
     previous = await prisma.generatedDocument.findFirst({
       where: { meetingId: meeting.id, type: "LISTE_OFFICIELLE", supersededAt: null },
@@ -561,22 +599,24 @@ async function buildListDocument(input: { meeting: Meeting; actor?: User | null;
     const rows = await tx.attendance.findMany({
       // Liste publique : seules les personnes ayant accepté d'y figurer.
       where: { meetingId: meeting.id, status: "ACTIVE", ...(kind === "public" ? { publicListConsent: true } : {}) },
-      orderBy: { checkInAt: "asc" },
+      orderBy: ATTENDANCE_ORDER,
     });
     return [current.contentVersion, rows] as const;
   });
   const documentUuid = randomUUID();
   const version = kind === "official" ? (previous?.version ?? 0) + 1 : 1;
-  const buffer = await renderList({
-    meeting,
-    attendances,
-    actor,
-    kind,
-    documentUuid,
-    version,
-    supersedes: previous,
-    correctionNote,
-  });
+  const buffer = await withRenderSlot(() =>
+    renderList({
+      meeting,
+      attendances,
+      actor,
+      kind,
+      documentUuid,
+      version,
+      supersedes: previous,
+      correctionNote,
+    }),
+  );
   const sha256 = createHash("sha256").update(buffer).digest("hex");
   const prefix = kind === "official" ? `liste-officielle-v${version}` : kind === "provisional" ? "liste-provisoire" : "liste-publique";
   const objectKey = meetingObjectKey(meeting.uuid, "exports", `${prefix}-${documentUuid}.pdf`);
@@ -670,7 +710,7 @@ export async function buildExcel(meeting: Meeting, attendances: Attendance[], ac
     { header: "Heure", key: "checkInAt", width: 22 },
     { header: "Mode", key: "method", width: 16 },
     { header: "Motif dérogation", key: "manualReason", width: 28 },
-    { header: "Confirmation", key: "code", width: 16 },
+    { header: "Confirmation", key: "code", width: 20 },
   ];
   const fill = (sheet: ExcelJS.Worksheet, rows: Attendance[], extra?: (row: Attendance) => Record<string, string>) => {
     rows.forEach((row, i) => {

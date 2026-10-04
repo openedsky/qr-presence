@@ -77,7 +77,8 @@ export function OnboardingTour({ steps, autoStart }: { steps: TourStep[]; autoSt
         if (bubbleRef.current) setBubbleHeight(bubbleRef.current.offsetHeight);
       });
     };
-    findTarget(step.target)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    findTarget(step.target)?.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
     measure();
     const settle = setTimeout(measure, 350);
     window.addEventListener("resize", measure);

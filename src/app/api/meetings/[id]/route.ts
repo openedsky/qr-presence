@@ -2,16 +2,14 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { meetingFormSchema } from "@/lib/validators";
 import { requireMeetingApi } from "@/lib/meeting-access";
-import { isFrozen } from "@/lib/meeting-status";
+import { isFrozen, isRegistrationOpen } from "@/lib/meeting-status";
 import { writeAudit } from "@/lib/audit";
 import { diffForAudit } from "@/lib/audit-format";
 import { assertMeetingType } from "@/server/services/meeting-types";
 import { meetingDates, resolveSecretary } from "@/server/services/meeting-input";
 import { isUniqueViolation } from "@/server/services/meetings";
+import { PRINTED_MEETING_FIELDS } from "@/server/services/documents";
 import { readJsonBody } from "@/lib/http";
-
-/** Informations de la réunion imprimées sur les listes : seules elles périment la liste officielle. */
-const PRINTED_FIELDS = new Set(["title", "internalRef", "startsAt", "location"]);
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -19,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (gate.error) return gate.error;
   const meeting = await prisma.meeting.findUnique({
     where: { id },
-    include: { _count: { select: { attendances: true } } },
+    include: { _count: { select: { attendances: { where: { status: "ACTIVE" } } } } },
   });
   if (!meeting) return NextResponse.json({ error: "Réunion introuvable" }, { status: 404 });
   const canSeeNotes = gate.session.user.role !== "AUDITOR" && gate.session.user.role !== "SECRETARY";
@@ -47,7 +45,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (typeError) return NextResponse.json({ error: typeError }, { status: 400 });
   const secretary = await resolveSecretary(data.secretaryId);
   if (secretary.error) return NextResponse.json({ error: secretary.error }, { status: 400 });
-  if (data.qrMode !== before.qrMode && before.status === "OUVERTE") {
+  if (data.qrMode !== before.qrMode && isRegistrationOpen(before.status)) {
     const count = await prisma.attendance.count({ where: { meetingId: id } });
     if (count > 0) {
       return NextResponse.json(
@@ -77,7 +75,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   };
   const diff = diffForAudit(before, next);
   if (diff.changed.length === 0) return NextResponse.json({ id, unchanged: true });
-  const printed = diff.changed.some((field) => PRINTED_FIELDS.has(field));
+  const printed = diff.changed.some((field) => PRINTED_MEETING_FIELDS.has(field));
   let result;
   try {
     // Conditionnée au statut lu : une clôture concurrente ne peut pas être suivie d'une modification.
@@ -109,6 +107,12 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   const { id } = await params;
   const gate = await requireMeetingApi(id, "delete");
   if (gate.error) return gate.error;
+  if (gate.meeting.status !== "BROUILLON" && gate.meeting.status !== "PLANIFIEE") {
+    return NextResponse.json(
+      { error: "Seule une réunion en brouillon ou planifiée peut être supprimée : clôturez puis archivez-la." },
+      { status: 409 },
+    );
+  }
   const counts = await prisma.meeting.findUnique({
     where: { id },
     select: { _count: { select: { attendances: true, documents: true } } },

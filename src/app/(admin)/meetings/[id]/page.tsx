@@ -19,6 +19,7 @@ const DOCUMENT_LABELS: Record<string, string> = {
 };
 import { LiveFeed } from "./live-feed";
 import { internalStructureNames, normalizeLabel } from "@/server/services/structures";
+import { ATTENDANCE_ORDER } from "@/server/services/attendances";
 
 const PARTICIPANTS_LIMIT = 500;
 
@@ -91,8 +92,8 @@ export default async function MeetingDetailPage({
                   OR: [
                     { lastName: { contains: needle } },
                     { firstNames: { contains: needle } },
-                    { email: { contains: needle } },
-                    { phone: { contains: needle } },
+                    // Coordonnées : critères réservés aux gestionnaires (sinon test d'appartenance d'une adresse).
+                    ...(canEditAttendances ? [{ email: { contains: needle } }, { phone: { contains: needle } }] : []),
                     { jobTitle: { contains: needle } },
                     { organization: { contains: needle } },
                   ],
@@ -111,7 +112,7 @@ export default async function MeetingDetailPage({
             status: true,
             suspectedDuplicate: true,
           },
-          orderBy: { checkInAt: "asc" },
+          orderBy: ATTENDANCE_ORDER,
           take: PARTICIPANTS_LIMIT + 1,
         })
       : [];
@@ -191,8 +192,8 @@ export default async function MeetingDetailPage({
         {[
           ["Inscrits", meeting.expectedParticipants ?? "—"],
           ["Présents", activeCount],
-          ["Internes", internals],
-          ["Externes", activeCount - internals],
+          ["Structures internes", internals],
+          ["Autres structures", activeCount - internals],
           ["Hommes / Femmes", `${men} / ${activeCount - men}`],
           ["Premier / dernier", `${first ? formatTime(first) : "—"} / ${last ? formatTime(last) : "—"}`],
         ].map(([label, value]) => (
@@ -208,6 +209,7 @@ export default async function MeetingDetailPage({
           <Link
             key={key}
             href={`/meetings/${meeting.id}?tab=${key}`}
+            aria-current={tab === key ? "page" : undefined}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === key ? "bg-forest text-white shadow" : "text-muted hover:bg-mint hover:text-forest"}`}
           >
             {label}
@@ -229,7 +231,7 @@ export default async function MeetingDetailPage({
             </dl>
             {meeting.description ? <p className="mt-4 text-sm text-muted">{meeting.description}</p> : null}
           </Card>
-          <LiveFeed meetingId={meeting.id} initialCount={activeCount} />
+          <LiveFeed meetingId={meeting.id} initialCount={activeCount} renderedAt={new Date().getTime()} />
         </div>
       ) : null}
 
@@ -238,7 +240,8 @@ export default async function MeetingDetailPage({
           {suspected > 0 ? (
             <p className="mb-4 flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-900">
               <AlertTriangle className="h-4 w-4 shrink-0" />
-              {suspected} présence(s) portent le même nom qu&apos;un autre participant : vérifiez s&apos;il s&apos;agit d&apos;homonymes ou d&apos;un doublon.
+              {suspected > 1 ? `${suspected} présences portent` : "1 présence porte"} le même nom qu&apos;un autre participant :
+              vérifiez s&apos;il s&apos;agit d&apos;homonymes ou d&apos;un doublon.
             </p>
           ) : null}
           {meeting.status === "CLOTUREE" && canEditAttendances ? (
@@ -247,8 +250,17 @@ export default async function MeetingDetailPage({
               Réunion clôturée : chaque correction exige un motif et produit une nouvelle version de la liste officielle.
             </p>
           ) : null}
-          <form className="mb-4 flex gap-2">
-            <input name="q" defaultValue={q} placeholder="Nom, email, téléphone, fonction, structure" className="field" />
+          <form className="mb-4 flex flex-wrap gap-2" role="search">
+            <label htmlFor="participants-q" className="sr-only">
+              Rechercher un participant
+            </label>
+            <input
+              id="participants-q"
+              name="q"
+              defaultValue={q}
+              placeholder={canEditAttendances ? "Nom, email, téléphone, fonction, structure" : "Nom, fonction, structure"}
+              className="field min-w-0 flex-1 basis-56"
+            />
             <input type="hidden" name="tab" value="participants" />
             <Button type="submit" variant="outline">Rechercher</Button>
             {canEditAttendances && ["OUVERTE", "EN_COURS", "CLOTUREE"].includes(meeting.status) ? (
@@ -264,7 +276,9 @@ export default async function MeetingDetailPage({
                 <th>Heure</th>
                 <th>Mode</th>
                 <th>Statut</th>
-                <th />
+                <th>
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -287,7 +301,7 @@ export default async function MeetingDetailPage({
                       </span>
                     ) : null}
                   </td>
-                  <td>{row.status === "ACTIVE" ? "Présent" : "Annulée"}</td>
+                  <td>{row.status === "ACTIVE" ? "Valide" : "Annulée"}</td>
                   <td>
                     {canEditAttendances ? (
                       <Link href={`/meetings/${meeting.id}/participants/${row.id}`} className="text-forest">
@@ -299,6 +313,11 @@ export default async function MeetingDetailPage({
               ))}
             </tbody>
           </table>
+          {attendances.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted">
+              {needle ? `Aucun participant ne correspond à « ${needle} ».` : "Aucun participant enregistré pour le moment."}
+            </p>
+          ) : null}
           {truncated ? (
             <p className="mt-4 text-sm text-muted">
               Affichage limité aux {PARTICIPANTS_LIMIT} premières présences : affinez la recherche, ou utilisez l&apos;export

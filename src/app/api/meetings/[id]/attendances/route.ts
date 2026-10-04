@@ -5,6 +5,7 @@ import { attendanceFormSchema } from "@/lib/validators";
 import { fromDateTimeLocal } from "@/lib/utils";
 import { logger } from "@/lib/logger";
 import {
+  ATTENDANCE_ORDER,
   AttendanceValidationError,
   ClosedMeetingError,
   DuplicateAttendanceError,
@@ -13,6 +14,7 @@ import {
 } from "@/server/services/attendances";
 import { scheduleOfficialRefresh } from "@/server/services/documents";
 import { readJsonBody } from "@/lib/http";
+import { hasPermission } from "@/lib/rbac";
 
 /** Champs exposés au back-office : ni empreinte d'IP ni navigateur (données techniques de sécurité). */
 const PUBLIC_FIELDS = {
@@ -42,6 +44,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   if (gate.error) return gate.error;
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") ?? "").slice(0, 100);
+  // Coordonnées et code de confirmation : réservés aux gestionnaires (sinon contournement de l'export tracé).
+  const withContact = hasPermission(gate.session.user.role, "attendances.manage");
+  const { email, phone, confirmationCode, ...withoutContact } = PUBLIC_FIELDS;
   const rows = await prisma.attendance.findMany({
     where: {
       meetingId: id,
@@ -49,15 +54,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         ? [
             { lastName: { contains: q } },
             { firstNames: { contains: q } },
-            { email: { contains: q } },
-            { phone: { contains: q } },
+            ...(withContact ? [{ email: { contains: q } }, { phone: { contains: q } }] : []),
             { jobTitle: { contains: q } },
             { organization: { contains: q } },
           ]
         : undefined,
     },
-    select: PUBLIC_FIELDS,
-    orderBy: { checkInAt: "asc" },
+    select: withContact ? { ...withoutContact, email, phone, confirmationCode } : withoutContact,
+    orderBy: ATTENDANCE_ORDER,
   });
   return NextResponse.json(rows);
 }

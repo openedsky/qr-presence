@@ -32,6 +32,12 @@ export function checkEnvironment() {
   if (production && !process.env.REDIS_URL) {
     warnings.push("REDIS_URL absent : limites, verrous et usage unique des QR ne sont pas partagés entre instances.");
   }
+  if (process.env.STORAGE_DRIVER === "s3") {
+    const missing = ["S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"].filter((name) => !process.env[name]);
+    if (missing.length) errors.push(`STORAGE_DRIVER=s3 mais ${missing.join(", ")} absent(s).`);
+  } else if (production) {
+    warnings.push("Stockage local (STORAGE_DRIVER≠s3) : signatures et PDF restent dans le conteneur, à monter sur un volume sauvegardé.");
+  }
 
   for (const message of warnings) logger.warn("config.warning", { message });
   for (const message of errors) logger.error("config.error", { message });

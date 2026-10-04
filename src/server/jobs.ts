@@ -12,7 +12,7 @@ import { mapWithLimit } from "@/lib/concurrency";
 import { DEFAULT_PRIVACY_NOTICE, LEGACY_PRIVACY_NOTICES } from "@/lib/privacy-notice";
 import { TransitionError, transitionMeeting } from "./services/meetings";
 import { getSettings } from "./services/settings";
-import { reconcileOfficialLists } from "./services/documents";
+import { establishOfficialList, reconcileOfficialLists } from "./services/documents";
 
 const AUTO_CLOSE_EVERY_MS = 5 * 60_000;
 const PURGE_EVERY_MS = 6 * 3600_000;
@@ -49,11 +49,12 @@ export async function autoCloseMeetings(now = new Date()) {
     if (windowState(meeting, now) !== "after") continue;
     // Rouverte après la fin de la fenêtre (corrections) : délai laissé avant la nouvelle clôture automatique.
     if (meeting.reopenedAt && now.getTime() - meeting.reopenedAt.getTime() < REOPEN_GRACE_MS) continue;
+    // Une réunion en erreur ne doit pas empêcher la clôture des suivantes.
     try {
       await transitionMeeting(meeting.id, "CLOTUREE", null, { auto: true });
       closed += 1;
     } catch (error) {
-      if (!(error instanceof TransitionError)) throw error;
+      if (!(error instanceof TransitionError)) logger.error("job.auto_close_meeting_failed", { meetingId: meeting.id, error });
     }
   }
   if (closed > 0) logger.info("job.auto_close", { closed });
@@ -82,9 +83,15 @@ export async function purgeExpiredMeetings(now = new Date()) {
     select: { id: true },
     take: 50,
   });
+  let purged = 0;
   for (const { id } of meetings) {
-    // La liste officielle conservée doit refléter les dernières corrections avant que les données ne disparaissent.
-    await reconcileOfficialLists([id], 1);
+    // La liste officielle conservée doit refléter les dernières corrections (ou être établie, réunions
+    // héritées comprises) avant que les données ne disparaissent : sinon purge reportée au passage suivant.
+    if ((await establishOfficialList(id)) === "failed") {
+      logger.warn("job.retention_purge_postponed", { meetingId: id });
+      continue;
+    }
+    purged += 1;
     const attendances = await prisma.attendance.findMany({
       where: { meetingId: id },
       select: { id: true, signatureObjectKey: true },
@@ -154,8 +161,8 @@ export async function purgeExpiredMeetings(now = new Date()) {
     where: { action: { in: ["auth.login_failed", "auth.locked"] }, createdAt: { lt: limit }, afterData: { not: Prisma.DbNull } },
     data: { afterData: Prisma.DbNull, ipAddress: null, userAgent: null },
   });
-  if (meetings.length > 0) logger.info("job.retention_purge", { meetings: meetings.length });
-  return meetings.length;
+  if (purged > 0) logger.info("job.retention_purge", { meetings: purged });
+  return purged;
 }
 
 /** Les jetons dynamiques ne vivent que quelques secondes : inutile de les conserver au-delà d'une journée. */
@@ -274,10 +281,8 @@ export function startScheduler() {
     setInterval(() => void autoClose(), AUTO_CLOSE_EVERY_MS).unref(),
     setInterval(() => void purge(), PURGE_EVERY_MS).unref(),
   );
-  // Arrêt du conteneur : plus de nouvelle tâche planifiée, connexions à la base fermées proprement.
-  process.once("SIGTERM", () => {
-    stopScheduler();
-    void prisma.$disconnect().catch(() => undefined);
-  });
+  // Arrêt du conteneur : plus de nouvelle tâche planifiée. Next ferme le serveur (requêtes en cours terminées)
+  // puis quitte ; déconnecter Prisma ici ferait échouer ces requêtes.
+  process.once("SIGTERM", stopScheduler);
   logger.info("jobs.started", { autoCloseMinutes: AUTO_CLOSE_EVERY_MS / 60_000, purgeHours: PURGE_EVERY_MS / 3600_000 });
 }

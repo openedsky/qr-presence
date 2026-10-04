@@ -19,7 +19,7 @@ export async function GET() {
     orderBy: { startsAt: "desc" },
     take: 100,
     omit: { internalNotes: true },
-    include: { _count: { select: { attendances: true } } },
+    include: { _count: { select: { attendances: { where: { status: "ACTIVE" } } } } },
   });
   return NextResponse.json(meetings);
 }

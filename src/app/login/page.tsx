@@ -31,10 +31,10 @@ const LOGIN_ERRORS: Record<string, string> = {
   locked:
     "Compte temporairement verrouillé après plusieurs échecs. Réessayez plus tard ou contactez un administrateur.",
   rate_limited: "Trop de tentatives de connexion. Patientez quelques minutes avant de réessayer.",
-  no_access: "Ce compte n'a pas accès à l'espace d'administration. Contactez un administrateur.",
+  no_access: "Identifiants invalides, compte désactivé ou sans accès à l'administration.",
   temp_expired:
     "Mot de passe provisoire expiré (validité 7 jours). Demandez à un administrateur de réinitialiser votre mot de passe.",
-  default: "Identifiants invalides ou compte désactivé.",
+  default: "Identifiants invalides, compte désactivé ou sans accès à l'administration.",
 };
 
 export default function LoginPage() {
@@ -84,8 +84,8 @@ function LoginScreen() {
     : null;
 
   return (
-    <div className="grid h-dvh overflow-hidden lg:grid-cols-[1.05fr_1fr]">
-      <aside className="relative hidden overflow-hidden bg-sidebar text-white lg:flex lg:flex-col lg:px-12 lg:py-10 xl:px-16 short:lg:py-7">
+    <div className="grid min-h-dvh lg:grid-cols-[1.05fr_1fr]">
+      <aside className="relative hidden overflow-hidden bg-sidebar text-white lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col lg:px-12 lg:py-10 xl:px-16 short:lg:py-7">
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(160deg,rgba(255,255,255,0.1)_0%,transparent_50%,rgba(0,0,0,0.3)_100%)]" />
         <div className="bg-qr-grid pointer-events-none absolute inset-0" />
         <div className="pointer-events-none absolute -right-32 -top-32 h-96 w-96 rounded-full bg-gold/15 blur-3xl" />
@@ -125,7 +125,7 @@ function LoginScreen() {
         </p>
       </aside>
 
-      <main className="bg-app-pattern flex min-h-0 flex-col">
+      <main className="bg-app-pattern flex min-h-dvh flex-col">
         <div className="bg-qr-grid relative overflow-hidden bg-sidebar px-6 pb-12 pt-6 text-white lg:hidden short:pb-10 short:pt-4">
           <BrandLockup inverted />
           <p className="mt-4 font-display text-xl font-semibold leading-snug short:hidden">
@@ -133,8 +133,9 @@ function LoginScreen() {
           </p>
         </div>
 
-        <div className="flex min-h-0 flex-1 items-center justify-center px-4 pb-4 lg:py-6">
-          <div className="-mt-8 w-full max-w-md lg:mt-0">
+        {/* my-auto plutôt que items-center : un formulaire plus haut que l'écran (paysage, zoom) reste défilable. */}
+        <div className="flex flex-1 justify-center px-4 pb-4 lg:py-6">
+          <div className="-mt-8 w-full max-w-md lg:my-auto">
             <form onSubmit={onSubmit} className="card p-6 sm:p-8">
               <div className="flex items-center gap-3">
                 <QrMark className="h-11 w-11 shrink-0" />
@@ -212,18 +213,9 @@ function LoginScreen() {
                 </Link>
               </div>
 
-              <Button type="submit" className="group mt-5 w-full py-3 text-base" disabled={pending}>
-                {pending ? (
-                  <>
-                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                    Vérification…
-                  </>
-                ) : (
-                  <>
-                    Se connecter
-                    <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" />
-                  </>
-                )}
+              <Button type="submit" className="group mt-5 w-full py-3 text-base" loading={pending}>
+                {pending ? "Vérification…" : "Se connecter"}
+                <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" />
               </Button>
 
               <div className="mt-5 flex items-center gap-2 border-t border-line pt-4 text-xs text-muted short:hidden">

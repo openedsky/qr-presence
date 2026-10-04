@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit -p .",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "db:migrate:legacy": "tsx scripts/migrate-legacy.ts"
+    "db:migrate:legacy": "tsx scripts/migrate-legacy.ts",
+    "db:migrate:legacy-signatures": "tsx scripts/restore-legacy-signatures.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.901.0",

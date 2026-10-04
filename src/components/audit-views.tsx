@@ -3,10 +3,8 @@ import { ArrowRight, ChevronLeft, ChevronRight, Filter, History } from "lucide-r
 import { actionLabel, auditChanges, ENTITY_LABELS } from "@/lib/audit-format";
 import type { AuditFilters, AuditRow } from "@/server/services/audit-query";
 import { queryString } from "@/server/services/audit-query";
-import { cn } from "@/lib/utils";
+import { APP_TIME_ZONE as TIME_ZONE, cn } from "@/lib/utils";
 import { Button, Card } from "./ui";
-
-const TIME_ZONE = "Africa/Abidjan";
 
 function time(value: Date) {
   return new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: TIME_ZONE }).format(value);

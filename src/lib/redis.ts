@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { logger } from "@/lib/logger";
 
 const globalForRedis = globalThis as unknown as { redis?: Redis | null };
 
@@ -31,6 +32,16 @@ export function getRedis() {
   return globalForRedis.redis;
 }
 
+let lastFallbackLog = 0;
+
+/** Bascule sur le repli mémoire signalée (au plus une fois par minute) : limites et verrous deviennent locaux à l'instance. */
+function reportFallback(error: unknown) {
+  const now = Date.now();
+  if (now - lastFallbackLog < 60_000) return;
+  lastFallbackLog = now;
+  logger.warn("redis.fallback", { error: error instanceof Error ? error.message : String(error) });
+}
+
 const memory = new Map<string, { value: string; expiresAt: number }>();
 
 export async function cacheGet(key: string) {
@@ -39,8 +50,8 @@ export async function cacheGet(key: string) {
     try {
       if (redis.status === "wait") await redis.connect();
       return await redis.get(key);
-    } catch {
-      // fallback mémoire
+    } catch (error) {
+      reportFallback(error);
     }
   }
   const hit = memory.get(key);
@@ -59,8 +70,8 @@ export async function cacheSet(key: string, value: string, ttlSeconds: number) {
       if (redis.status === "wait") await redis.connect();
       await redis.set(key, value, "EX", ttlSeconds);
       return;
-    } catch {
-      // fallback
+    } catch (error) {
+      reportFallback(error);
     }
   }
   memory.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
@@ -73,8 +84,8 @@ export async function cacheSetNx(key: string, value: string, ttlSeconds: number)
     try {
       if (redis.status === "wait") await redis.connect();
       return (await redis.set(key, value, "EX", ttlSeconds, "NX")) === "OK";
-    } catch {
-      // fallback
+    } catch (error) {
+      reportFallback(error);
     }
   }
   const hit = memory.get(key);
@@ -118,8 +129,8 @@ export async function cacheIncr(key: string, ttlSeconds: number) {
       if (redis.status === "wait") await redis.connect();
       const [[, count]] = (await redis.multi().incr(key).expire(key, ttlSeconds, "NX").exec()) as [[unknown, number]];
       return count;
-    } catch {
-      // fallback
+    } catch (error) {
+      reportFallback(error);
     }
   }
   // Fenêtre fixe : l'échéance est posée au premier passage et n'est pas repoussée par les suivants.

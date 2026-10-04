@@ -1,4 +1,21 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+
+/**
+ * Après un changement de nom ou une annulation, un ancien homonyme resté seul n'est plus un doublon probable :
+ * son signalement est levé (les signalements encore justifiés sont conservés).
+ */
+export async function clearLoneHomonymFlags(tx: Prisma.TransactionClient, meetingId: string, nameKey: string) {
+  if (!nameKey) return;
+  const active = await tx.attendance.findMany({
+    where: { meetingId, status: "ACTIVE", nameKey },
+    select: { id: true, suspectedDuplicate: true },
+    take: 2,
+  });
+  if (active.length === 1 && active[0].suspectedDuplicate) {
+    await tx.attendance.update({ where: { id: active[0].id }, data: { suspectedDuplicate: false } });
+  }
+}
 
 /**
  * Bloque sur un identifiant fiable (compte, email, téléphone). Le nom seul ne bloque pas :
@@ -21,14 +38,14 @@ export async function findDuplicate(input: {
   if (identifiers.length > 0) {
     const blocking = await prisma.attendance.findFirst({
       where: { meetingId: input.meetingId, status: "ACTIVE", OR: identifiers },
-      orderBy: { checkInAt: "asc" },
+      orderBy: [{ checkInAt: "asc" }, { id: "asc" }],
     });
     if (blocking) return { blocking, homonym: null };
   }
 
   const homonym = await prisma.attendance.findFirst({
     where: { meetingId: input.meetingId, status: "ACTIVE", nameKey: input.nameKey },
-    orderBy: { checkInAt: "asc" },
+    orderBy: [{ checkInAt: "asc" }, { id: "asc" }],
   });
   if (homonym && identifiers.length === 0) return { blocking: homonym, homonym: null };
   return { blocking: null, homonym };

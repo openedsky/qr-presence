@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { attendanceFormSchema } from "@/lib/validators";
 import { resolveToken } from "@/lib/qr";
-import { checkMeetingCap, checkPublicSubmissionLimits, clientIp, deviceId } from "@/lib/rate-limit";
+import {
+  checkMeetingCap,
+  checkPublicSubmissionLimits,
+  clientIp,
+  deviceConfirmation,
+  deviceId,
+  markDeviceDone,
+} from "@/lib/rate-limit";
 import { verifyCheckinSession, CHECKIN_SESSION_SECONDS } from "@/lib/checkin-session";
 import { cacheDel, cacheSetNx } from "@/lib/redis";
 import { PayloadTooLargeError, readJsonLimited } from "@/lib/http";
@@ -31,6 +38,11 @@ function fail(error: string, status: number) {
   return NextResponse.json({ error }, { status });
 }
 
+/** 409 accompagné du code déjà délivré à cet appareil : le formulaire renvoie vers la page de confirmation. */
+function alreadyDone(confirmationCode: string, error: string) {
+  return NextResponse.json({ error, confirmationCode, alreadyRegistered: true }, { status: 409 });
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   if (!token || token.length > 128) return fail("QR invalide.", 404);
@@ -51,18 +63,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // Limites vérifiées avant de lire le corps : une rafale de requêtes volumineuses ne coûte rien au serveur.
   const settings = await getSettings();
   const ip = clientIp(request);
-  if (meeting.qrSecurityLevel === 2 && !deviceId(request)) {
+  const device = deviceId(request);
+  if (meeting.qrSecurityLevel === 2 && !device) {
     return fail("Appareil non reconnu : rechargez la page du QR code puis réessayez.", 400);
   }
   const allowed = await checkPublicSubmissionLimits({
     meetingId: meeting.id,
     ip,
-    device: deviceId(request),
+    device,
     expectedParticipants: meeting.expectedParticipants,
     perMinute: settings.rateLimitPerMinute,
-    strictDevice: meeting.qrSecurityLevel === 2,
   });
   if (!allowed) return fail("Trop de tentatives. Réessayez dans une minute.", 429);
+  // Cet appareil a déjà émargé (réponse perdue sur un réseau lent, ou niveau 2) : on lui rend son code.
+  const previousCode = await deviceConfirmation(meeting.id, device);
+  if (previousCode && meeting.qrSecurityLevel === 2) {
+    return alreadyDone(previousCode, "Cet appareil a déjà servi à émarger pour cette réunion (une personne par appareil).");
+  }
 
   let body: unknown;
   try {
@@ -97,7 +114,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
 
   const parsed = attendanceFormSchema.safeParse({ ...body, token });
   if (!parsed.success) {
-    return fail(parsed.error.issues[0]?.message ?? "Données invalides", 400);
+    const issue = parsed.error.issues[0];
+    const field = typeof issue?.path[0] === "string" ? issue.path[0] : undefined;
+    return NextResponse.json({ error: issue?.message ?? "Données invalides", field }, { status: 400 });
   }
 
   if (!(await checkMeetingCap(meeting.id, meeting.expectedParticipants))) {
@@ -129,6 +148,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       ip,
       userAgent: request.headers.get("user-agent"),
     });
+    await markDeviceDone(meeting.id, device, attendance.confirmationCode).catch(() => undefined);
     return NextResponse.json({
       confirmationCode: attendance.confirmationCode,
       displayName: displayName(attendance.lastName, attendance.firstNames),
@@ -138,6 +158,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   } catch (error) {
     // La session n'est consommée que par un émargement réussi : une erreur de saisie permet de corriger et renvoyer.
     if (nonceKey) await cacheDel(nonceKey);
+    if (error instanceof DuplicateAttendanceError && previousCode) {
+      return alreadyDone(previousCode, "Votre présence est déjà enregistrée depuis cet appareil.");
+    }
     if (error instanceof DuplicateAttendanceError || error instanceof ClosedMeetingError) {
       return fail(error.message, 409);
     }

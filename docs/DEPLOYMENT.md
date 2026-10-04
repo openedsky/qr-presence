@@ -103,7 +103,7 @@ Fixer la taille du pool Prisma dans `DATABASE_URL`, par ex. `mysql://…/sodefor
 
 ## Contraintes d'exploitation
 
-- **Une seule instance** du service `nextjs` : le suivi temps réel (SSE) est diffusé en mémoire du processus. Les tâches planifiées sont protégées par un verrou Redis si plusieurs instances venaient à tourner.
+- **Plusieurs instances possibles** du service `nextjs` : le suivi temps réel (SSE) passe par le pub/sub Redis, chaque instance relaie les événements à ses propres connexions (sans Redis, la diffusion reste limitée à l'instance qui a reçu l'émargement). Les tâches planifiées sont protégées par un verrou Redis. Chaque compte est limité à 12 flux temps réel simultanés par instance.
 - Le proxy Traefik de Dokploy ne bufferise pas les SSE (en-tête `X-Accel-Buffering: no` envoyé).
 - `AUTH_TRUST_HOST=true` est nécessaire derrière le proxy.
 - Limites de ressources et rotation des journaux (json-file) sont définies dans le compose.

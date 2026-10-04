@@ -301,7 +301,7 @@ model Attendance {
   @@unique([meetingId, activeUserKey])
   @@index([meetingId, activeNameKey])
   @@index([signatureObjectKey])
-  @@index([status, checkInAt])
+  @@index([status, checkInAt, meetingId])
 }
 
 model AttendanceChange {
@@ -352,6 +352,7 @@ model AuditLog {
   @@index([actorId, createdAt])
   @@index([entity, createdAt])
   @@index([meetingId, createdAt])
+  @@index([action, createdAt])
 }
 
 model GeneratedDocument {

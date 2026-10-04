@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireMeetingApi } from "@/lib/meeting-access";
 import { buildCsv } from "@/server/services/documents";
+import { ATTENDANCE_ORDER } from "@/server/services/attendances";
 import { writeAudit } from "@/lib/audit";
 import { safeFilename } from "@/lib/http";
 import { rateLimit } from "@/lib/rate-limit";
@@ -16,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const meeting = gate.meeting;
   const attendances = await prisma.attendance.findMany({
     where: { meetingId: id },
-    orderBy: { checkInAt: "asc" },
+    orderBy: ATTENDANCE_ORDER,
   });
   await writeAudit({
     actorId: gate.session.user.id,

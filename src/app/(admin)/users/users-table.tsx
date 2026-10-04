@@ -62,11 +62,26 @@ function EditRow({ user, self, onDone }: { user: UserRow; self: boolean; onDone:
   }
 
   return (
-    <tr className="border-t border-line bg-mint/40">
+    <tr id={`edit-row-${user.id}`} className="border-t border-line bg-mint/40">
       <td colSpan={5} className="px-4 py-4">
-        <form onSubmit={onSubmit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <form
+          onSubmit={onSubmit}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onDone();
+          }}
+          aria-label={`Modifier le compte ${user.email}`}
+          className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+        >
           <Field label="Nom" required htmlFor={`e-ln-${user.id}`}>
-            <Input id={`e-ln-${user.id}`} name="lastName" defaultValue={user.lastName} required minLength={2} maxLength={80} />
+            <Input
+              id={`e-ln-${user.id}`}
+              name="lastName"
+              defaultValue={user.lastName}
+              required
+              minLength={2}
+              maxLength={80}
+              autoFocus
+            />
           </Field>
           <Field label="Prénom" required htmlFor={`e-fn-${user.id}`}>
             <Input id={`e-fn-${user.id}`} name="firstName" defaultValue={user.firstName} required minLength={2} maxLength={80} />
@@ -104,6 +119,12 @@ function EditRow({ user, self, onDone }: { user: UserRow; self: boolean; onDone:
 export function UsersTable({ users, currentUserId }: { users: UserRow[]; currentUserId: string }) {
   const router = useRouter();
   const [editing, setEditing] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  function closeEditor(id: string) {
+    setEditing(null);
+    requestAnimationFrame(() => document.getElementById(`edit-btn-${id}`)?.focus());
+  }
 
   async function resetPassword(user: UserRow) {
     const ok = await confirmAction({
@@ -136,9 +157,14 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
   }
 
   async function unlock(user: UserRow) {
-    if (await patchUser(user.id, { unlock: true })) {
-      void notifySuccess("Compte déverrouillé");
-      router.refresh();
+    setBusy(user.id);
+    try {
+      if (await patchUser(user.id, { unlock: true })) {
+        void notifySuccess("Compte déverrouillé");
+        router.refresh();
+      }
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -181,17 +207,22 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
                     <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">Verrouillé</span>
                   ) : null}
                   {user.mustChangePassword ? (
-                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">MDP provisoire</span>
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                      Mot de passe provisoire
+                    </span>
                   ) : null}
                 </div>
               </td>
               <td className="px-4">
                 <div className="flex justify-end gap-1">
                   <button
+                    id={`edit-btn-${user.id}`}
                     type="button"
-                    title="Modifier"
-                    aria-label={`Modifier ${user.email}`}
-                    onClick={() => setEditing(editing === user.id ? null : user.id)}
+                    title={editing === user.id ? "Fermer" : "Modifier"}
+                    aria-label={`${editing === user.id ? "Fermer la modification de" : "Modifier"} ${user.email}`}
+                    aria-expanded={editing === user.id}
+                    aria-controls={editing === user.id ? `edit-row-${user.id}` : undefined}
+                    onClick={() => (editing === user.id ? closeEditor(user.id) : setEditing(user.id))}
                     className="flex h-8 w-8 items-center justify-center rounded-lg text-forest hover:bg-mint"
                   >
                     {editing === user.id ? <X className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
@@ -202,7 +233,9 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
                       title="Déverrouiller"
                       aria-label={`Déverrouiller ${user.email}`}
                       onClick={() => void unlock(user)}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-red-700 hover:bg-red-50"
+                      disabled={busy === user.id}
+                      aria-busy={busy === user.id || undefined}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-red-700 hover:bg-red-50 disabled:cursor-progress disabled:opacity-50"
                     >
                       <Lock className="h-4 w-4" />
                     </button>
@@ -234,7 +267,7 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
               </td>
             </tr>,
             editing === user.id ? (
-              <EditRow key={`${user.id}-edit`} user={user} self={self} onDone={() => setEditing(null)} />
+              <EditRow key={`${user.id}-edit`} user={user} self={self} onDone={() => closeEditor(user.id)} />
             ) : null,
           ];
         })}

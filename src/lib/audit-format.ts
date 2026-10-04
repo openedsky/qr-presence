@@ -1,6 +1,7 @@
 import { STATUS_LABELS } from "./meeting-status";
 import { ROLE_LABELS } from "./rbac";
 import { METHOD_LABELS } from "./labels";
+import { APP_TIME_ZONE } from "./utils";
 
 export const ACTION_LABELS: Record<string, string> = {
   "auth.login": "Connexion",
@@ -161,7 +162,7 @@ export function formatAuditValue(field: string, value: unknown): string {
   if (typeof value === "string" && ISO_DATE.test(value)) {
     const date = new Date(value);
     if (!Number.isNaN(date.getTime())) {
-      return new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short", timeZone: "Africa/Abidjan" }).format(date);
+      return new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium", timeStyle: "short", timeZone: APP_TIME_ZONE }).format(date);
     }
   }
   if (value instanceof Date) return formatAuditValue(field, value.toISOString());

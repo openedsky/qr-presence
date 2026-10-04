@@ -39,10 +39,25 @@ function toInput(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function parseDay(value: string | undefined) {
+const MIN_YEAR = 2000;
+
+function parseDay(value: string | undefined, now = new Date()) {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = new Date(`${value}T00:00:00Z`);
-  return Number.isNaN(date.getTime()) || toInput(date) !== value ? null : date;
+  if (Number.isNaN(date.getTime()) || toInput(date) !== value) return null;
+  const year = date.getUTCFullYear();
+  return year < MIN_YEAR || year > now.getUTCFullYear() + 1 ? null : date;
+}
+
+/** Message d'erreur d'une plage personnalisée saisie, ou null si elle est applicable. */
+export function customRangeError(from: string, to: string, now = new Date()) {
+  if (!from || !to) return "Renseignez les deux dates.";
+  const start = parseDay(from, now);
+  const end = parseDay(to, now);
+  if (!start || !end) return `Date invalide (années ${MIN_YEAR} à ${now.getUTCFullYear() + 1}).`;
+  if (start > end) return "La date de début doit précéder la date de fin.";
+  if ((end.getTime() - start.getTime()) / DAY_MS > MAX_CUSTOM_DAYS) return "Période limitée à 5 ans.";
+  return null;
 }
 
 function formatDay(date: Date) {
@@ -80,8 +95,8 @@ export function resolveDashboardPeriod(
       from = lastDays(365);
       break;
     case "custom": {
-      let start = parseDay(params.from);
-      let end = parseDay(params.to);
+      let start = parseDay(params.from, now);
+      let end = parseDay(params.to, now);
       if (!start || !end) {
         key = DEFAULT_DASHBOARD_PERIOD;
         from = lastDays(30);

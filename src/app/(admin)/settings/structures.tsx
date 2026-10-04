@@ -75,7 +75,9 @@ export function StructuresManager({ structures, domains }: { structures: Structu
               <th>Structure</th>
               <th>Catégorie</th>
               <th>État</th>
-              <th />
+              <th>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>

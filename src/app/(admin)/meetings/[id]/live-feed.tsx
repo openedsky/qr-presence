@@ -2,32 +2,29 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { APP_TIME_ZONE } from "@/lib/utils";
 
-type EventPayload = {
-  type: string;
-  attendance?: {
-    id: string;
-    firstNames: string;
-    lastName: string;
-    checkInAt: string;
-  };
-};
+type EventPayload =
+  | { type: "attendance.created"; attendance?: { id: string; firstNames: string; lastName: string; checkInAt: string } }
+  | { type: "attendance.cancelled"; attendance?: { id: string } }
+  | { type: "ready" | "ping" };
 
 type FeedEvent = { id: string; text: string };
 
 /** Le compte local peut dériver (annulations, événements manqués pendant une reconnexion) : resynchronisation régulière. */
 const RESYNC_MS = 60_000;
 
-const timeFormat = new Intl.DateTimeFormat("fr-FR", { timeZone: "Africa/Abidjan", hour: "2-digit", minute: "2-digit" });
+const timeFormat = new Intl.DateTimeFormat("fr-FR", { timeZone: APP_TIME_ZONE, hour: "2-digit", minute: "2-digit" });
 
-export function LiveFeed({ meetingId, initialCount }: { meetingId: string; initialCount: number }) {
+/** `renderedAt` change à chaque rendu serveur : le compte du serveur fait foi, même s'il n'a pas changé. */
+export function LiveFeed({ meetingId, initialCount, renderedAt }: { meetingId: string; initialCount: number; renderedAt: number }) {
   const router = useRouter();
   const [count, setCount] = useState(initialCount);
-  const [syncedCount, setSyncedCount] = useState(initialCount);
+  const [syncedAt, setSyncedAt] = useState(renderedAt);
   const [events, setEvents] = useState<FeedEvent[]>([]);
 
-  if (initialCount !== syncedCount) {
-    setSyncedCount(initialCount);
+  if (renderedAt !== syncedAt) {
+    setSyncedAt(renderedAt);
     setCount(initialCount);
   }
 
@@ -55,6 +52,11 @@ export function LiveFeed({ meetingId, initialCount }: { meetingId: string; initi
             ...list.filter((event) => event.id !== id),
           ].slice(0, 8),
         );
+      }
+      if (data.type === "attendance.cancelled" && data.attendance) {
+        const { id } = data.attendance;
+        setCount((value) => Math.max(0, value - 1));
+        setEvents((list) => list.filter((event) => event.id !== id));
       }
     };
     const resync = window.setInterval(() => {

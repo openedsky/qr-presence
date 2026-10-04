@@ -4,6 +4,10 @@ import { BrandLockup } from "@/components/logo";
 import { formatDateTime, formatTime } from "@/lib/utils";
 import { isFrozen } from "@/lib/meeting-status";
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
+import { ipFromHeaders } from "@/lib/client-ip";
+import { rateLimit } from "@/lib/rate-limit";
+import { ATTENDANCE_ORDER } from "@/server/services/attendances";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +18,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function PublicListPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
+  if (!(await rateLimit(`public-list:${ipFromHeaders(await headers())}`, 60, 60)).allowed) notFound();
   const resolved = await resolveToken(token);
   if (!resolved || resolved.modeMismatch) notFound();
   if (resolved.expired && resolved.record.type !== "DYNAMIC") notFound();
@@ -23,7 +28,7 @@ export default async function PublicListPage({ params }: { params: Promise<{ tok
   const [rows, total] = await Promise.all([
     prisma.attendance.findMany({
       where: { meetingId: meeting.id, status: "ACTIVE", publicListConsent: true },
-      orderBy: { checkInAt: "asc" },
+      orderBy: ATTENDANCE_ORDER,
       select: { id: true, lastName: true, firstNames: true, jobTitle: true, organization: true, checkInAt: true },
     }),
     prisma.attendance.count({ where: { meetingId: meeting.id, status: "ACTIVE" } }),
@@ -42,21 +47,21 @@ export default async function PublicListPage({ params }: { params: Promise<{ tok
           figurer sont listés. Ni email, ni téléphone, ni signature. Liste retirée à la clôture de la réunion.
         </p>
         <div className="card mt-6 overflow-x-auto p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-mint text-left text-xs uppercase text-muted">
+          <table className="data-table w-full text-sm">
+            <thead>
               <tr>
-                <th className="px-4 py-3">N°</th>
-                <th>Nom et prénom</th>
-                <th>Fonction</th>
-                <th>Structure</th>
-                <th>Heure</th>
+                <th scope="col">N°</th>
+                <th scope="col">Nom et prénom</th>
+                <th scope="col">Fonction</th>
+                <th scope="col">Structure</th>
+                <th scope="col">Heure</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, index) => (
-                <tr key={row.id} className="border-t border-line">
-                  <td className="px-4 py-3">{index + 1}</td>
-                  <td>
+                <tr key={row.id}>
+                  <td>{index + 1}</td>
+                  <td className="font-semibold">
                     {row.lastName} {row.firstNames}
                   </td>
                   <td>{row.jobTitle}</td>

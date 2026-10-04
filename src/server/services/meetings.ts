@@ -162,33 +162,47 @@ export async function transitionMeeting(
   if (result.count === 0) {
     throw new TransitionError("Le statut de la réunion vient d'être modifié par ailleurs : actualisez la page.");
   }
-  const updated = await prisma.meeting.findUniqueOrThrow({ where: { id } });
+  const updated = { ...meeting, ...((await prisma.meeting.findUnique({ where: { id } })) ?? { status: to }) };
+
+  // Le statut est acquis : les étapes suivantes sont journalisées en cas d'échec sans faire paraître
+  // la transition refusée (l'interface afficherait une erreur alors que le statut a changé).
+  const step = async (name: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+    } catch (error) {
+      logger.error("meeting.transition_step_failed", { meetingId: id, step: name, error });
+    }
+  };
 
   // Le jeton statique n'est pas révoqué à la clôture : l'affiche doit afficher « réunion clôturée ».
   // Le statut suffit à refuser tout nouvel émargement.
   if (closing || to === MeetingStatus.ARCHIVEE) {
-    await revokeDynamicTokens(id);
+    await step("revoke_dynamic_tokens", () => revokeDynamicTokens(id));
   }
   if (reopening) {
-    const lastStatic = await prisma.meetingQrToken.findFirst({
-      where: { meetingId: id, type: "STATIC" },
-      orderBy: { createdAt: "desc" },
+    await step("restore_static_token", async () => {
+      const lastStatic = await prisma.meetingQrToken.findFirst({
+        where: { meetingId: id, type: "STATIC" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (lastStatic) {
+        await prisma.meetingQrToken.update({ where: { id: lastStatic.id }, data: { revokedAt: null } });
+      } else {
+        await ensureStaticToken(updated);
+      }
     });
-    if (lastStatic) {
-      await prisma.meetingQrToken.update({ where: { id: lastStatic.id }, data: { revokedAt: null } });
-    } else {
-      await ensureStaticToken(updated);
-    }
   }
 
-  await writeAudit({
-    actorId,
-    action: options.auto ? "meeting.auto_close" : closing ? "meeting.close" : reopening ? "meeting.reopen" : "meeting.status",
-    entity: "Meeting",
-    entityId: id,
-    beforeData: { status: meeting.status },
-    afterData: { status: to },
-  });
+  await step("audit", () =>
+    writeAudit({
+      actorId,
+      action: options.auto ? "meeting.auto_close" : closing ? "meeting.close" : reopening ? "meeting.reopen" : "meeting.status",
+      entity: "Meeting",
+      entityId: id,
+      beforeData: { status: meeting.status },
+      afterData: { status: to },
+    }),
+  );
 
   if (closing) {
     // Établie en arrière-plan : la clôture répond sans attendre le rendu du PDF. Un export lancé entre-temps

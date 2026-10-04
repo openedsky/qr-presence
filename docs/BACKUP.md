@@ -13,10 +13,19 @@
 - Sauvegarde quotidienne automatique : service `backup` de `docker-compose.dokploy.yml` (`scripts/backup.sh`).
   Il produit dans le volume `db_backups` la base (`db-AAAAMMJJ-HHMMSS.sql.gz`) et le stockage objet
   (`files-AAAAMMJJ-HHMMSS.tar.gz`, volume `storage_data` monté en lecture seule), avec une rotation
-  `BACKUP_RETENTION_DAYS` (14 jours par défaut). Les échecs apparaissent dans les journaux du service.
-- **Chiffrement** : renseigner `BACKUP_PASSPHRASE` (`openssl rand -base64 32`). Les archives portent alors
-  l'extension `.enc` (AES-256-CBC, PBKDF2 200 000 itérations). Conserver la phrase dans un coffre-fort **hors du
-  serveur** : sans elle, aucune restauration n'est possible. Sans phrase, le service avertit au démarrage.
+  `BACKUP_RETENTION_DAYS` (14 jours par défaut). Une sauvegarde est faite au démarrage du service, puis chaque
+  jour à `BACKUP_HOUR` (2 h par défaut).
+- **Contrôles** : le dump est écrit dans un fichier et rejeté si `mariadb-dump` échoue, dépasse
+  `BACKUP_DUMP_TIMEOUT` (1 h) ou si le marqueur `-- Dump completed` manque ; chaque archive est vérifiée par
+  `gzip -t`. Après une sauvegarde complète, `/backups/.last-success` est mis à jour : le service passe
+  « unhealthy » s'il date de plus de 26 h (à relier à l'alerte Dokploy). Les échecs apparaissent aussi dans les
+  journaux du service.
+- **Chiffrement obligatoire** : renseigner `BACKUP_PASSPHRASE` (`openssl rand -base64 32`), sans quoi le compose
+  refuse de démarrer. Les archives portent l'extension `.enc` (AES-256-CBC, PBKDF2 200 000 itérations). Conserver la
+  phrase dans un coffre-fort **hors du serveur** : sans elle, aucune restauration n'est possible.
+- **Fichiers** : l'archive du stockage est prise à chaud ; un fichier modifié pendant la lecture est signalé mais
+  l'archive conservée. Les objets étant immuables (signatures, PDF versionnés), seuls les objets en cours
+  d'écriture peuvent manquer ; ils figurent dans l'archive suivante.
 - **Copie distante obligatoire** : un volume Docker reste sur le même serveur. Soit `BACKUP_REMOTE_CMD` (appelée
   pour chaque archive, `{}` = chemin ; l'outil utilisé, par exemple `rclone`, doit être présent dans l'image ou
   monté dans le conteneur), soit une synchronisation programmée sur l'hôte (`rclone sync` du volume

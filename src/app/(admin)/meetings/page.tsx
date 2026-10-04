@@ -78,12 +78,22 @@ export default async function MeetingsPage({
         }
       />
       <Card className="mb-5 p-4">
-        <form className="grid gap-3 md:grid-cols-[1fr_200px_200px_auto]">
+        <form role="search" className="grid gap-3 md:grid-cols-[1fr_200px_200px_auto]">
           <div className="relative">
+            <label htmlFor="meetings-q" className="sr-only">
+              Rechercher une réunion
+            </label>
             <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-            <input name="q" defaultValue={q} placeholder="Rechercher un objet, un lieu, une référence…" className="field pl-10" />
+            <input
+              id="meetings-q"
+              name="q"
+              type="search"
+              defaultValue={q}
+              placeholder="Rechercher un objet, un lieu, une référence…"
+              className="field pl-10"
+            />
           </div>
-          <select name="status" defaultValue={status ?? ""} className="field">
+          <select name="status" defaultValue={status ?? ""} className="field" aria-label="Filtrer par statut">
             <option value="">Tous les statuts</option>
             {Object.entries(STATUS_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
@@ -91,7 +101,7 @@ export default async function MeetingsPage({
               </option>
             ))}
           </select>
-          <select name="type" defaultValue={type ?? ""} className="field">
+          <select name="type" defaultValue={type ?? ""} className="field" aria-label="Filtrer par type de réunion">
             <option value="">Tous les types</option>
             {types.map((option) => (
               <option key={option.code} value={option.code}>
@@ -114,7 +124,9 @@ export default async function MeetingsPage({
               <th>Participants</th>
               <th>Statut</th>
               <th>Organisateur</th>
-              <th />
+              <th>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>

@@ -6,6 +6,8 @@ import { writeAudit } from "@/lib/audit";
 import { scheduleOfficialRefresh } from "@/server/services/documents";
 import { lockMeetingContent, MeetingStateChangedError } from "@/server/services/meeting-content";
 import { readJsonBody } from "@/lib/http";
+import { meetingChannel, publish } from "@/lib/realtime";
+import { clearLoneHomonymFlags } from "@/server/services/duplicates";
 
 export async function POST(
   request: Request,
@@ -46,6 +48,7 @@ export async function POST(
         },
       });
       if (result.count === 0) throw new MeetingStateChangedError("Cette présence est déjà annulée.");
+      await clearLoneHomonymFlags(tx, id, current.nameKey);
       return locked.status === "CLOTUREE";
     });
   } catch (error) {
@@ -61,5 +64,6 @@ export async function POST(
     afterData: { meetingId: id, status: "ANNULEE", reason: parsed.data.reason },
   });
   if (closed) scheduleOfficialRefresh(id, gate.session.user.id);
+  publish(meetingChannel(id), { type: "attendance.cancelled", attendance: { id: attendanceId } });
   return NextResponse.json({ ok: true });
 }

@@ -178,9 +178,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           if (!ghost.allowed) throw new LockedError();
           return null;
         }
-        if (user.lockedUntil && user.lockedUntil > new Date()) throw new LockedError();
+        // Compte verrouillé : le bon mot de passe reste accepté depuis une adresse sans échec récent sur ce compte,
+        // sinon un attaquant pourrait maintenir les administrateurs hors de l'application en provoquant des échecs.
+        const locked = Boolean(user.lockedUntil && user.lockedUntil > new Date());
+        if (locked && pairFailures > 0) throw new LockedError();
 
         const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
+        if (!ok && locked) {
+          await recordPairFailure();
+          throw new LockedError();
+        }
         if (!ok) {
           const now = new Date();
           const failures = nextFailureCount(user.failedLoginCount, user.lastFailedLoginAt, now);
@@ -198,8 +205,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           if (minutes > 0) throw new LockedError();
           return null;
         }
-        // Rôle sans accès à l'administration : refus explicite plutôt qu'une boucle vers la connexion.
-        if (user.role === "USER") throw new NoBackofficeError();
+        // Rôle sans accès à l'administration : même réponse qu'un mot de passe erroné (un message distinct
+        // confirmerait que le mot de passe est juste) ; décompté comme un échec pour cette adresse.
+        if (user.role === "USER") {
+          await auditLogin("auth.login_failed", user.id, email);
+          await recordPairFailure();
+          throw new NoBackofficeError();
+        }
         if (temporaryPasswordExpired(user)) {
           await auditLogin("auth.login_failed", user.id, email);
           throw new TemporaryPasswordExpiredError();

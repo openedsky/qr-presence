@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { isValidPhone } from "./phone";
 import { fromDateTimeLocal } from "./utils";
+import { OPEN_ENDED_HOURS } from "./meeting-status";
 
 export const civilitySchema = z.enum(["M", "MME", "MLLE"]);
 
 const meetingBaseSchema = z.object({
-    title: z.string().min(3, "L'objet est obligatoire").max(180),
+    title: z.string().trim().min(3, "L'objet est obligatoire").max(180),
     internalRef: z.string().max(40).optional().or(z.literal("")),
     description: z.string().max(8000).optional().or(z.literal("")),
     type: z.string().min(1, "Le type est obligatoire").max(40),
@@ -68,7 +69,8 @@ export const meetingFormSchema = meetingBaseSchema.superRefine(
     if (opens && opens.getTime() < starts.getTime() - 24 * 3600_000) {
       ctx.addIssue({ code: "custom", path: ["registrationOpensAt"], message: "L'émargement ne peut pas ouvrir plus de 24 h avant la réunion" });
     }
-    if (opens && (ends ?? starts) < opens) {
+    // Sans heure de fin, la fenêtre court jusqu'à début + OPEN_ENDED_HOURS (voir registrationWindow).
+    if (opens && (ends ?? new Date(starts.getTime() + OPEN_ENDED_HOURS * 3600_000)) < opens) {
       ctx.addIssue({ code: "custom", path: ["registrationOpensAt"], message: "L'émargement doit ouvrir avant la fin de la réunion" });
     }
     const dynamicLevel = data.qrSecurityLevel >= 3;
@@ -92,10 +94,10 @@ export const meetingFormSchema = meetingBaseSchema.superRefine(
 const attendanceBaseSchema = z.object({
     token: z.string().min(16),
     civility: civilitySchema,
-    lastName: z.string().min(2).max(80),
-    firstNames: z.string().min(2).max(120),
-    jobTitle: z.string().min(2).max(120),
-    organization: z.string().min(2).max(160),
+    lastName: z.string().trim().min(2, "Nom trop court").max(80),
+    firstNames: z.string().trim().min(2, "Prénom(s) trop court(s)").max(120),
+    jobTitle: z.string().trim().min(2, "Fonction trop courte").max(120),
+    organization: z.string().trim().min(2, "Structure trop courte").max(160),
     email: z.string().email("Email invalide").optional().or(z.literal("")),
     phone: z.string().max(30).optional().or(z.literal("")),
     // 512 Ko de signature binaire ≈ 700 000 caractères en base64.
@@ -147,10 +149,10 @@ export const userPatchSchema = z.object({
 });
 
 export const attendancePatchSchema = z.object({
-  lastName: z.string().min(2).max(80).optional(),
-  firstNames: z.string().min(2).max(120).optional(),
-  jobTitle: z.string().min(2).max(120).optional(),
-  organization: z.string().min(2).max(160).optional(),
+  lastName: z.string().trim().min(2, "Nom trop court").max(80).optional(),
+  firstNames: z.string().trim().min(2, "Prénom(s) trop court(s)").max(120).optional(),
+  jobTitle: z.string().trim().min(2, "Fonction trop courte").max(120).optional(),
+  organization: z.string().trim().min(2, "Structure trop courte").max(160).optional(),
   email: z.string().trim().email("Email invalide").optional().or(z.literal("")),
   phone: z
     .string()

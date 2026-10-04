@@ -141,8 +141,9 @@ export function SignaturePad({
   /** Alternative au tracé (clavier, lecteur d'écran) : le nom saisi est écrit dans le cadre. */
   function applyTyped() {
     const text = typed.trim();
+    if (!text) return;
     const target = wipe();
-    if (!text || !target) return;
+    if (!target) return;
     const rect = target.canvas.getBoundingClientRect();
     let size = Math.min(48, rect.height * 0.45);
     target.ctx.font = `italic ${size}px "Segoe Script", "Brush Script MT", cursive`;

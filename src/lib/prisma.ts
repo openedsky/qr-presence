@@ -8,6 +8,5 @@ export const prisma =
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
+// Aussi en production : instrumentation (jobs) et routes peuvent être des bundles distincts, un seul pool.
+globalForPrisma.prisma = prisma;

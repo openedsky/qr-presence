@@ -15,9 +15,10 @@ import {
   monthGrid,
   monthKey,
   parseMonth,
+  shiftMonth,
   type CalendarCategory,
 } from "@/lib/calendar";
-import { cn } from "@/lib/utils";
+import { APP_TIME_ZONE, cn } from "@/lib/utils";
 
 export const metadata = { title: "Calendrier des réunions" };
 
@@ -30,7 +31,7 @@ const FILTERS: { value: "all" | CalendarCategory; label: string }[] = [
 
 const MAX_PER_CELL = 3;
 
-const timeFmt = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Abidjan" });
+const timeFmt = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: APP_TIME_ZONE });
 
 export default async function CalendarPage({
   searchParams,
@@ -61,7 +62,7 @@ export default async function CalendarPage({
     byDay.set(key, [...(byDay.get(key) ?? []), m]);
   }
 
-  const inMonth = enriched.filter((m) => m.startsAt.getMonth() === month.getMonth());
+  const inMonth = enriched.filter((m) => monthKey(m.startsAt) === monthKey(month));
   const counts = {
     total: inMonth.length,
     prevue: inMonth.filter((m) => m.category === "prevue").length,
@@ -71,16 +72,16 @@ export default async function CalendarPage({
 
   const selectedKey =
     // « 2026-13-45 » passe l'expression mais donne une date invalide (le formatage lèverait une erreur 500).
-    params.d && /^\d{4}-\d{2}-\d{2}$/.test(params.d) && !Number.isNaN(new Date(`${params.d}T12:00:00`).getTime())
+    params.d && /^\d{4}-\d{2}-\d{2}$/.test(params.d) && !Number.isNaN(new Date(`${params.d}T12:00:00Z`).getTime())
       ? params.d
       : monthKey(now) === monthKey(month)
         ? todayKey
         : dayKey(month);
   const selectedMeetings = byDay.get(selectedKey) ?? [];
-  const selectedDate = new Date(`${selectedKey}T12:00:00`);
+  const selectedDate = new Date(`${selectedKey}T12:00:00Z`);
 
-  const prev = new Date(month.getFullYear(), month.getMonth() - 1, 1);
-  const next = new Date(month.getFullYear(), month.getMonth() + 1, 1);
+  const prev = shiftMonth(month, -1);
+  const next = shiftMonth(month, 1);
   const qs = (overrides: Record<string, string | undefined>) => {
     const values = { m: monthKey(month), f: filter === "all" ? undefined : filter, ...overrides };
     const search = new URLSearchParams(
@@ -88,7 +89,7 @@ export default async function CalendarPage({
     ).toString();
     return `/calendar${search ? `?${search}` : ""}`;
   };
-  const monthLabel = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" }).format(month);
+  const monthLabel = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(month);
   const canCreate = hasPermission(session.user.role, "meetings.create");
 
   return (
@@ -154,10 +155,10 @@ export default async function CalendarPage({
             {days.map((day) => {
               const key = dayKey(day);
               const items = byDay.get(key) ?? [];
-              const outside = day.getMonth() !== month.getMonth();
+              const outside = monthKey(day) !== monthKey(month);
               const isToday = key === todayKey;
               const isSelected = key === selectedKey;
-              const weekend = day.getDay() === 0 || day.getDay() === 6;
+              const weekend = day.getUTCDay() === 0 || day.getUTCDay() === 6;
               return (
                 <div
                   key={key}
@@ -174,7 +175,7 @@ export default async function CalendarPage({
                         isToday ? "bg-forest text-white" : outside ? "text-muted/50" : "text-ink hover:bg-mint",
                       )}
                     >
-                      {day.getDate()}
+                      {day.getUTCDate()}
                     </span>
                     {items.length > 0 ? (
                       <span className="text-[10px] font-semibold text-muted md:hidden">{items.length}</span>
@@ -197,7 +198,7 @@ export default async function CalendarPage({
                     ))}
                     {items.length > MAX_PER_CELL ? (
                       <Link href={qs({ d: key, m: monthKey(day) })} className="px-1 text-xs font-semibold text-forest hover:underline">
-                        + {items.length - MAX_PER_CELL} autre(s)
+                        + {items.length - MAX_PER_CELL} {items.length - MAX_PER_CELL > 1 ? "autres" : "autre"}
                       </Link>
                     ) : null}
                   </div>
@@ -228,7 +229,7 @@ export default async function CalendarPage({
           <div className="border-b border-line px-5 py-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-leaf">Journée sélectionnée</p>
             <h3 className="mt-1 font-display text-xl font-semibold capitalize text-forest-deep">
-              {new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(selectedDate)}
+              {new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" }).format(selectedDate)}
             </h3>
           </div>
           <div className="space-y-3 p-5">

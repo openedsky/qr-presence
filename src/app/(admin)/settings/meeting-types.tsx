@@ -122,7 +122,9 @@ export function MeetingTypesManager({ types }: { types: TypeRow[] }) {
               <th className="w-28">Ordre</th>
               <th>Réunions</th>
               <th>État</th>
-              <th />
+              <th>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>

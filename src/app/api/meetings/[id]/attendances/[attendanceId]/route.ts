@@ -7,6 +7,7 @@ import { normalizePhone } from "@/lib/phone";
 import { writeAudit } from "@/lib/audit";
 import { isInternalParticipant } from "@/server/services/structures";
 import { scheduleOfficialRefresh } from "@/server/services/documents";
+import { clearLoneHomonymFlags } from "@/server/services/duplicates";
 import { expectClosed, lockMeetingContent, MeetingStateChangedError } from "@/server/services/meeting-content";
 import { readJsonBody } from "@/lib/http";
 
@@ -88,7 +89,9 @@ export async function PATCH(
   }
 
   let suspectedDuplicate = current.suspectedDuplicate;
-  if (isActive && key !== current.nameKey) {
+  // Le contrôle d'homonyme vaut aussi quand l'email ou le téléphone est retiré : sans eux, deux présences
+  // du même nom deviendraient indiscernables (situation bloquée à l'enregistrement).
+  if (isActive && (key !== current.nameKey || changed.includes("email") || changed.includes("phone"))) {
     const homonym = await prisma.attendance.findFirst({
       where: { meetingId: id, status: "ACTIVE", nameKey: key, id: { not: attendanceId } },
       select: { emailNormalized: true, phoneNormalized: true },
@@ -99,7 +102,7 @@ export async function PATCH(
         { status: 409 },
       );
     }
-    suspectedDuplicate = Boolean(homonym);
+    suspectedDuplicate = key !== current.nameKey ? Boolean(homonym) : current.suspectedDuplicate;
   }
 
   try {
@@ -121,6 +124,7 @@ export async function PATCH(
         },
       });
       if (updated.count === 0) throw new StaleAttendanceError();
+      if (isActive && key !== current.nameKey) await clearLoneHomonymFlags(tx, id, current.nameKey);
       await tx.attendanceChange.createMany({
         data: changed.map((field) => ({
           attendanceId,

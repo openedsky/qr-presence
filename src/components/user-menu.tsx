@@ -75,7 +75,15 @@ export function UserMenu({ userName, role, email }: { userName: string; role: st
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div
+      ref={rootRef}
+      className="relative"
+      onBlur={(event) => {
+        // Tabulation hors du menu : il se referme. relatedTarget nul (clic sous Safari) : laissé au pointerdown.
+        const next = event.relatedTarget as Node | null;
+        if (open && next && !event.currentTarget.contains(next)) setOpenPath(null);
+      }}
+    >
       <button
         ref={triggerRef}
         type="button"

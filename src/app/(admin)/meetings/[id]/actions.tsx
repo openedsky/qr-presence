@@ -128,15 +128,15 @@ export function MeetingActions({
             run({
               path: `/api/meetings/${id}/reopen`,
               confirm: {
-                title: "Réouvrir la réunion ?",
+                title: "Rouvrir la réunion ?",
                 text: "Les émargements seront à nouveau acceptés. À la prochaine clôture, toute modification produira une nouvelle version de la liste officielle. L'opération est tracée.",
-                confirmText: "Réouvrir",
+                confirmText: "Rouvrir",
               },
-              success: "Réunion réouverte",
+              success: "Réunion rouverte",
             })
           }
         >
-          <RotateCcw className="h-4 w-4" /> Réouvrir
+          <RotateCcw className="h-4 w-4" /> Rouvrir
         </Button>
       ) : null}
       {canDuplicate ? (
@@ -170,7 +170,7 @@ export function MeetingActions({
               path: `/api/meetings/${id}/archive`,
               confirm: {
                 title: "Archiver la réunion ?",
-                text: "Une réunion archivée ne peut plus être modifiée ni réouverte.",
+                text: "Une réunion archivée ne peut plus être modifiée ni rouverte.",
                 confirmText: "Archiver",
                 danger: true,
               },

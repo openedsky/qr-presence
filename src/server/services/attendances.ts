@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import type { Attendance, CheckInMethod, Civility, MeetingStatus } from "@prisma/client";
+import type { Attendance, CheckInMethod, Civility, MeetingStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/lib/audit";
 import { genderFromCivility, nameKey, normalizeEmail, toTitleFirstNames, toUpperLastName } from "@/lib/identity";
@@ -18,8 +18,12 @@ import { expectClosed, lockMeetingContent, MeetingStateChangedError } from "./me
 
 export const MAX_SIGNATURE_BYTES = 512 * 1024;
 
+/** Ordre de référence (listes, exports, PDF) : l'heure d'arrivée, puis l'identifiant pour départager les égalités. */
+export const ATTENDANCE_ORDER = [{ checkInAt: "asc" }, { id: "asc" }] satisfies Prisma.AttendanceOrderByWithRelationInput[];
+
+/** 48 bits : la page de confirmation publique ne doit pas pouvoir être parcourue par énumération. */
 function confirmationCode() {
-  return `SDF-${randomBytes(4).toString("hex").toUpperCase()}`;
+  return `SDF-${randomBytes(6).toString("hex").toUpperCase()}`;
 }
 
 function isUniqueViolation(error: unknown) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { periodBuckets, resolveDashboardPeriod } from "@/lib/dashboard-period";
+import { customRangeError, periodBuckets, resolveDashboardPeriod } from "@/lib/dashboard-period";
 
 const now = new Date("2026-10-04T11:00:00Z");
 
@@ -38,5 +38,20 @@ describe("resolveDashboardPeriod", () => {
   it("période personnalisée invalide : retour au défaut", () => {
     expect(resolveDashboardPeriod({ p: "custom", from: "2026-02-30", to: "2026-03-01" }, now).key).toBe("30d");
     expect(resolveDashboardPeriod({ p: "inconnu" }, now).key).toBe("30d");
+    expect(resolveDashboardPeriod({ p: "custom", from: "0001-01-01", to: "2026-03-01" }, now).key).toBe("30d");
+  });
+});
+
+describe("customRangeError", () => {
+  it("accepte une plage valide", () => {
+    expect(customRangeError("2026-01-01", "2026-03-31", now)).toBeNull();
+  });
+
+  it("refuse les saisies incomplètes, invalides, inversées ou trop longues", () => {
+    expect(customRangeError("", "2026-03-31", now)).toMatch(/deux dates/);
+    expect(customRangeError("1999-12-31", "2026-03-31", now)).toMatch(/invalide/);
+    expect(customRangeError("2026-01-01", "2028-01-01", now)).toMatch(/invalide/);
+    expect(customRangeError("2026-03-31", "2026-01-01", now)).toMatch(/précéder/);
+    expect(customRangeError("2020-01-01", "2026-03-31", now)).toMatch(/5 ans/);
   });
 });

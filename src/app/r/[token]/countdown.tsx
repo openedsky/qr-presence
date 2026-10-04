@@ -60,9 +60,23 @@ export function RegistrationCountdown({
     return () => clearInterval(timer);
   }, [reached, router]);
 
+  // Région annoncée présente dès le premier rendu : un lecteur d'écran ignore une région live insérée après coup.
+  const announcement = reached
+    ? waitingForOrganizer
+      ? "En attente d'ouverture par l'organisateur."
+      : "Ouverture de l'émargement en cours."
+    : "";
+  const live = (
+    <p className="sr-only" aria-live="polite" role="status">
+      {announcement}
+    </p>
+  );
+
   if (reached) {
     return (
-      <div className="mt-6 rounded-2xl border border-line bg-paper p-5 text-center shadow-sm" aria-live="polite">
+      <>
+      {live}
+      <div className="mt-6 rounded-2xl border border-line bg-paper p-5 text-center shadow-sm">
         <span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-mint border-t-forest" />
         <p className="mt-3 font-semibold text-forest-deep">
           {waitingForOrganizer ? "En attente d'ouverture par l'organisateur…" : "Ouverture de l'émargement…"}
@@ -74,23 +88,27 @@ export function RegistrationCountdown({
             : "Inutile de rescanner le QR."}
         </p>
       </div>
+      </>
     );
   }
 
   const { days, hours, minutes, seconds } = formatRemaining(left);
+  const plural = (value: number, one: string, many: string) => (value > 1 ? many : one);
   const blocks = [
-    ...(days > 0 ? [{ value: days, label: days > 1 ? "jours" : "jour" }] : []),
-    { value: hours, label: "heures" },
-    { value: minutes, label: "minutes" },
-    { value: seconds, label: "secondes" },
+    ...(days > 0 ? [{ key: "d", value: days, label: plural(days, "jour", "jours") }] : []),
+    { key: "h", value: hours, label: plural(hours, "heure", "heures") },
+    { key: "m", value: minutes, label: plural(minutes, "minute", "minutes") },
+    { key: "s", value: seconds, label: plural(seconds, "seconde", "secondes") },
   ];
 
   return (
+    <>
+    {live}
     <div className="mt-6">
       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-leaf">Ouverture de l&apos;émargement dans</p>
       <div className="mt-3 grid grid-flow-col auto-cols-fr gap-2" role="timer" aria-label={`Ouverture le ${opensAtLabel}`}>
         {blocks.map((block) => (
-          <div key={block.label} className="rounded-2xl border border-line bg-paper px-2 py-3 text-center shadow-sm">
+          <div key={block.key} className="rounded-2xl border border-line bg-paper px-2 py-3 text-center shadow-sm">
             <span className="block font-display text-3xl tabular-nums text-forest-deep">
               {String(block.value).padStart(2, "0")}
             </span>
@@ -103,5 +121,6 @@ export function RegistrationCountdown({
         automatiquement.
       </p>
     </div>
+    </>
   );
 }

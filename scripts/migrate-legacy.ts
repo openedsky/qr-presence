@@ -7,13 +7,13 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { createHash, randomBytes } from "crypto";
-import { nameKey, normalizeEmail } from "../src/lib/identity";
+import { nameKey, normalizeEmail, toTitleFirstNames, toUpperLastName } from "../src/lib/identity";
 import { normalizePhone } from "../src/lib/phone";
 
 const target = new PrismaClient();
 
 function confirmationCode() {
-  return `SDF-${randomBytes(4).toString("hex").toUpperCase()}`;
+  return `SDF-${randomBytes(6).toString("hex").toUpperCase()}`;
 }
 
 /** Les deux générations de l'intranet coexistent : lieu/lieu_evenement, actif/is_active, ferme/is_reunion_closed. */
@@ -107,19 +107,30 @@ async function main() {
       });
 
       // Clés de doublon (uniques par réunion) : seule la première présence active d'un email/téléphone les porte.
+      // Les présences actives en double (même email, téléphone ou nom) sont reprises mais signalées à l'organisateur.
       const seenEmails = new Set<string>();
       const seenPhones = new Set<string>();
+      const activeByName = new Map<string, number>();
+      const duplicateNames = new Set<string>();
       for (const presence of presences) {
-        const lastName = (presence.nom || "INCONNU").toUpperCase();
-        const firstNames = presence.prenom || "Inconnu";
+        const lastName = toUpperLastName(presence.nom || "") || "INCONNU";
+        const firstNames = toTitleFirstNames(presence.prenom || "") || "Inconnu";
         const active = flag(presence.actif, presence.is_active) !== false;
         const emailNormalized = normalizeEmail(presence.email);
         const phoneNormalized = normalizePhone(presence.contact);
         const key = nameKey(lastName, firstNames);
         const emailKey = active && emailNormalized && !seenEmails.has(emailNormalized) ? emailNormalized : null;
         const phoneKey = active && phoneNormalized && !seenPhones.has(phoneNormalized) ? phoneNormalized : null;
+        const contactDuplicate =
+          active &&
+          ((emailNormalized !== null && emailKey === null) || (phoneNormalized !== null && phoneKey === null));
         if (emailKey) seenEmails.add(emailKey);
         if (phoneKey) seenPhones.add(phoneKey);
+        if (active) {
+          const count = (activeByName.get(key) ?? 0) + 1;
+          activeByName.set(key, count);
+          if (count > 1) duplicateNames.add(key);
+        }
         await tx.attendance.create({
           data: {
             meetingId: created.id,
@@ -137,6 +148,7 @@ async function main() {
             activeEmailKey: emailKey,
             activePhoneKey: phoneKey,
             activeNameKey: active ? key : null,
+            suspectedDuplicate: contactDuplicate,
             confirmationCode: `LEG-${presence.id}-${confirmationCode()}`,
             checkInAt: presence.created_at ?? new Date(),
             checkInMethod: "QR_CODE",
@@ -144,6 +156,12 @@ async function main() {
             legacyPresenceId: presence.id,
             ipHash: createHash("sha256").update(`legacy:${presence.id}`).digest("hex"),
           },
+        });
+      }
+      if (duplicateNames.size > 0) {
+        await tx.attendance.updateMany({
+          where: { meetingId: created.id, activeNameKey: { in: [...duplicateNames] } },
+          data: { suspectedDuplicate: true },
         });
       }
       return created;

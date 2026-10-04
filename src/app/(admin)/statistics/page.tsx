@@ -69,11 +69,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         title="Statistiques"
         subtitle={`${isOwnMeetingsOnly(session.user.role) ? "Vos réunions" : "Ensemble des réunions"} tenues (clôturées ou archivées) · ${period.label}.`}
       />
-      <div className="mb-6 flex w-fit flex-wrap gap-1 rounded-2xl border border-line bg-paper p-1 shadow-sm">
+      <nav aria-label="Période" className="mb-6 flex w-fit flex-wrap gap-1 rounded-2xl border border-line bg-paper p-1 shadow-sm">
         {PERIODS.map((item) => (
           <Link
             key={item.value}
             href={`/statistics?p=${item.value}`}
+            aria-current={item.value === period.value ? "page" : undefined}
             className={cn(
               "rounded-xl px-4 py-2 text-sm font-semibold transition",
               item.value === period.value ? "bg-forest text-white shadow" : "text-muted hover:bg-mint hover:text-forest",
@@ -82,11 +83,11 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
             {item.label}
           </Link>
         ))}
-      </div>
+      </nav>
       <div className="stagger grid gap-4 md:grid-cols-4">
         <Card className="card-hover"><p className="text-xs uppercase text-muted">Réunions tenues</p><p className="mt-2 font-display text-4xl text-forest"><AnimatedNumber value={meetings} /></p></Card>
         <Card className="card-hover"><p className="text-xs uppercase text-muted">Présences</p><p className="mt-2 font-display text-4xl text-forest"><AnimatedNumber value={attendances} /></p></Card>
-        <Card className="card-hover"><p className="text-xs uppercase text-muted">Moyenne / réunion</p><p className="mt-2 font-display text-4xl text-forest">{average}</p></Card>
+        <Card className="card-hover"><p className="text-xs uppercase text-muted">Moyenne par réunion</p><p className="mt-2 font-display text-4xl text-forest">{average}</p></Card>
         <Card className="card-hover">
           <p className="text-xs uppercase text-muted">Taux de présence</p>
           <p className="mt-2 font-display text-4xl text-forest">

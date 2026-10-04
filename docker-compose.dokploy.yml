@@ -17,6 +17,8 @@ services:
       args:
         NEXT_PUBLIC_APP_URL: ${APP_URL:?APP_URL requis}
     restart: unless-stopped
+    # Laisse aux requêtes en cours (exports PDF) le temps de se terminer à l'arrêt.
+    stop_grace_period: 30s
     expose:
       - "3000"
     environment:
@@ -145,7 +147,8 @@ services:
       DB_USER: ${DB_USER:-sodefor}
       DB_PASSWORD: ${DB_PASSWORD}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:?BACKUP_PASSPHRASE requis (chiffrement des sauvegardes)}
       BACKUP_REMOTE_CMD: ${BACKUP_REMOTE_CMD:-}
       # Stockage objet (signatures, listes officielles) archivé avec la base.
       BACKUP_FILES_DIR: /files
@@ -158,6 +161,13 @@ services:
         condition: service_healthy
     networks:
       - backend
+    # « unhealthy » si aucune sauvegarde complète depuis 26 h.
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$(find /backups/.last-success -mmin -1560 2>/dev/null)\""]
+      interval: 15m
+      timeout: 10s
+      start_period: 2h
+      retries: 1
     logging: *logging
 
 networks:

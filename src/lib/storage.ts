@@ -14,8 +14,22 @@ function localDir() {
   return process.env.STORAGE_LOCAL_DIR || join(/*turbopackIgnore: true*/ process.cwd(), "storage");
 }
 
+/** Pilote S3 sans bucket : erreur plutôt qu'un repli silencieux sur le disque du conteneur (non sauvegardé). */
 function isS3() {
-  return (process.env.STORAGE_DRIVER || "local") === "s3";
+  if ((process.env.STORAGE_DRIVER || "local") !== "s3") return false;
+  if (!process.env.S3_BUCKET) throw new Error("STORAGE_DRIVER=s3 sans S3_BUCKET");
+  return true;
+}
+
+/** Joignabilité du stockage pour /api/health : HeadBucket en S3, accès au répertoire en local. */
+export async function checkStorage(): Promise<"ok" | "down"> {
+  try {
+    if (isS3()) await s3().send(new HeadBucketCommand({ Bucket: process.env.S3_BUCKET as string }));
+    else await mkdir(/*turbopackIgnore: true*/ localDir(), { recursive: true });
+    return "ok";
+  } catch {
+    return "down";
+  }
 }
 
 let client: S3Client | null = null;
@@ -50,7 +64,7 @@ function ensureBucket() {
 }
 
 export async function putObject(key: string, body: Buffer, contentType: string) {
-  if (isS3() && process.env.S3_BUCKET) {
+  if (isS3()) {
     await ensureBucket();
     await s3().send(
       new PutObjectCommand({
@@ -70,7 +84,7 @@ export async function putObject(key: string, body: Buffer, contentType: string) 
 }
 
 export async function getObjectBuffer(key: string): Promise<Buffer | null> {
-  if (isS3() && process.env.S3_BUCKET) {
+  if (isS3()) {
     try {
       const res = await s3().send(
         new GetObjectCommand({
@@ -97,7 +111,7 @@ export async function getObjectBuffer(key: string): Promise<Buffer | null> {
 }
 
 export async function deleteObject(key: string) {
-  if (isS3() && process.env.S3_BUCKET) {
+  if (isS3()) {
     await s3().send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
     return;
   }
@@ -106,7 +120,7 @@ export async function deleteObject(key: string) {
 }
 
 export async function getSignedObjectUrl(key: string, expiresIn = 300) {
-  if (isS3() && process.env.S3_BUCKET) {
+  if (isS3()) {
     return getSignedUrl(
       s3(),
       new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }),

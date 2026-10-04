@@ -259,11 +259,17 @@ export function MeetingForm({
               <option value="DYNAMIC">Dynamique (écran)</option>
             </Select>
           </Field>
-          <Field label="Niveau de sécurité QR" required htmlFor="qrSecurityLevel" className="md:col-span-2">
+          <Field
+            label="Niveau de sécurité QR"
+            required
+            htmlFor="qrSecurityLevel"
+            className="md:col-span-2"
+            hint="Le niveau 2 évite qu'un même téléphone enregistre plusieurs personnes par erreur ; seul le niveau 3 empêche une fraude délibérée (QR photographié et diffusé)."
+          >
             <Select id="qrSecurityLevel" name="qrSecurityLevel" required value={securityLevel} onChange={(e) => onSecurityChange(e.target.value)}>
               <option value="1">1 — QR statique (affiche imprimable)</option>
-              <option value="2">2 — QR statique, un seul émargement par téléphone</option>
-              <option value="3">3 — QR dynamique renouvelé à l&apos;écran</option>
+              <option value="2">2 — QR statique, une personne par navigateur</option>
+              <option value="3">3 — QR dynamique renouvelé à l&apos;écran (anti-fraude)</option>
             </Select>
           </Field>
           <p className="text-xs text-muted md:col-span-2 xl:col-span-4">

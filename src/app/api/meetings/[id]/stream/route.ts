@@ -18,12 +18,24 @@ const HEARTBEAT_MS = 15_000;
 const REAUTHORIZE_MS = 60_000;
 /** Le navigateur se reconnecte seul (EventSource) : une durée bornée évite les connexions orphelines. */
 const MAX_LIFETIME_MS = 60 * 60_000;
+/**
+ * Flux ouverts par compte, par instance (compteur local : un compteur Redis resterait gonflé après un arrêt brutal).
+ * Large pour plusieurs onglets et écrans de salle, mais borne un script qui ouvrirait des connexions en boucle.
+ */
+const MAX_STREAMS_PER_USER = 12;
+const openStreams = new Map<string, number>();
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const gate = await requireMeetingApi(id, "read");
   if (gate.error) return gate.error;
   const userId = gate.session.user.id;
+  if ((openStreams.get(userId) ?? 0) >= MAX_STREAMS_PER_USER) {
+    return Response.json(
+      { error: "Trop de suivis en direct ouverts : fermez des onglets puis réessayez." },
+      { status: 429, headers: { "Retry-After": "30" } },
+    );
+  }
   // La session vient d'être validée contre la base : sa version courante sert de référence.
   const account = await prisma.user.findUnique({ where: { id: userId }, select: { sessionVersion: true } });
   const sessionVersion = account?.sessionVersion ?? 0;
@@ -33,6 +45,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
+      openStreams.set(userId, (openStreams.get(userId) ?? 0) + 1);
       const write = (chunk: string) => {
         if (closed) return;
         try {
@@ -56,6 +69,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       cleanup = () => {
         if (closed) return;
         closed = true;
+        const remaining = (openStreams.get(userId) ?? 1) - 1;
+        if (remaining > 0) openStreams.set(userId, remaining);
+        else openStreams.delete(userId);
         clearInterval(heartbeat);
         clearInterval(reauthorize);
         clearTimeout(lifetime);

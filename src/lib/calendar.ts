@@ -25,31 +25,38 @@ export const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-export const dayKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-export const monthKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+/*
+ * Toutes les dates du calendrier sont en UTC : l'heure d'Abidjan (APP_TIME_ZONE) est UTC+0 sans heure d'été,
+ * et le résultat ne dépend plus du fuseau du serveur ou du poste de développement.
+ */
+export const dayKey = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+export const monthKey = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
 
-export function parseMonth(value?: string) {
+export function parseMonth(value?: string, now = new Date()) {
   const match = /^(\d{4})-(\d{2})$/.exec(value ?? "");
-  const now = new Date();
-  if (!match) return new Date(now.getFullYear(), now.getMonth(), 1);
+  if (!match) return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const month = Math.min(12, Math.max(1, Number(match[2])));
-  return new Date(Number(match[1]), month - 1, 1);
+  return new Date(Date.UTC(Number(match[1]), month - 1, 1));
+}
+
+/** Mois précédent (-1) ou suivant (+1), au premier jour, en UTC. */
+export function shiftMonth(monthStart: Date, delta: number) {
+  return new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + delta, 1));
 }
 
 /** Monday-first grid covering the whole month, in full weeks. */
 export function monthGrid(monthStart: Date) {
-  const first = new Date(monthStart.getFullYear(), monthStart.getMonth(), 1);
-  const offset = (first.getDay() + 6) % 7;
-  const gridStart = new Date(first);
-  gridStart.setDate(first.getDate() - offset);
-  const last = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
-  const trailing = 6 - ((last.getDay() + 6) % 7);
-  const gridEnd = new Date(last);
-  gridEnd.setDate(last.getDate() + trailing);
-  gridEnd.setHours(23, 59, 59, 999);
+  const year = monthStart.getUTCFullYear();
+  const monthIndex = monthStart.getUTCMonth();
+  const first = new Date(Date.UTC(year, monthIndex, 1));
+  const offset = (first.getUTCDay() + 6) % 7;
+  const gridStart = new Date(Date.UTC(year, monthIndex, 1 - offset));
+  const last = new Date(Date.UTC(year, monthIndex + 1, 0));
+  const trailing = 6 - ((last.getUTCDay() + 6) % 7);
+  const gridEnd = new Date(Date.UTC(year, monthIndex + 1, trailing + 1) - 1);
 
   const days: Date[] = [];
-  for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) {
+  for (let d = gridStart.getTime(); d <= gridEnd.getTime(); d += 86_400_000) {
     days.push(new Date(d));
   }
   return { gridStart, gridEnd, days };
