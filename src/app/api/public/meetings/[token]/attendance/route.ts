@@ -23,6 +23,7 @@ import {
 } from "@/server/services/attendances";
 import { displayName } from "@/lib/utils";
 import { selfRegistrationState } from "@/lib/meeting-status";
+import { clearProfileCookie, setProfileCookie } from "@/lib/participant-profile";
 
 /** Signature (≤ 700 000 caractères) + champs du formulaire. */
 const MAX_BODY_BYTES = 760 * 1024;
@@ -149,12 +150,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       userAgent: request.headers.get("user-agent"),
     });
     await markDeviceDone(meeting.id, device, attendance.confirmationCode).catch(() => undefined);
-    return NextResponse.json({
+    const response = NextResponse.json({
       confirmationCode: attendance.confirmationCode,
       displayName: displayName(attendance.lastName, attendance.firstNames),
       organization: `${attendance.jobTitle} – ${attendance.organization}`,
       checkInAt: attendance.checkInAt,
     });
+    // Mémorisation sur l'appareil, à la demande du participant (case cochée), signature exclue.
+    if ((body as { rememberMe?: unknown }).rememberMe === true) {
+      setProfileCookie(response, {
+        civility: parsed.data.civility,
+        lastName: parsed.data.lastName,
+        firstNames: parsed.data.firstNames,
+        jobTitle: parsed.data.jobTitle,
+        organization: parsed.data.organization,
+        email: parsed.data.email ?? "",
+        phone: parsed.data.phone ?? "",
+      });
+    } else {
+      clearProfileCookie(response);
+    }
+    return response;
   } catch (error) {
     // La session n'est consommée que par un émargement réussi : une erreur de saisie permet de corriger et renvoyer.
     if (nonceKey) await cacheDel(nonceKey);

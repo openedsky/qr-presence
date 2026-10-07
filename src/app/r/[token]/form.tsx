@@ -89,20 +89,49 @@ export function AttendancePublicForm({
   const [signature, setSignature] = useState("");
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<FieldName, string>>>({});
-  const [restored, setRestored] = useState(false);
+  const [restored, setRestored] = useState<"draft" | "profile" | null>(null);
+  const [rememberMe, setRememberMe] = useState(true);
 
   useEffect(() => {
-    const values = readDraft();
-    const form = formRef.current;
-    if (!values || !form) return;
-    for (const name of DRAFT_FIELDS) {
-      const element = form.elements.namedItem(name);
-      if ((element instanceof HTMLInputElement || element instanceof HTMLSelectElement) && values[name]) {
-        element.value = values[name];
+    // Ne remplit que les champs encore vides : la saisie déjà commencée n'est jamais écrasée.
+    function apply(values: Partial<Record<string, string>>) {
+      const form = formRef.current;
+      if (!form) return false;
+      let applied = false;
+      for (const name of DRAFT_FIELDS) {
+        const element = form.elements.namedItem(name);
+        const value = values[name];
+        if (!value || !(element instanceof HTMLInputElement || element instanceof HTMLSelectElement) || element.value) continue;
+        element.value = value;
+        // Liste de structures imposée : une valeur absente de la liste reste non sélectionnée.
+        if (element.value === value) applied = true;
       }
+      return applied;
     }
-    setRestored(true);
+
+    const draft = readDraft();
+    if (draft) {
+      if (apply(draft)) setRestored("draft");
+      return;
+    }
+    const controller = new AbortController();
+    fetch("/api/public/participant-profile", { cache: "no-store", credentials: "same-origin", signal: controller.signal })
+      .then((res) => (res.ok ? (res.json() as Promise<{ profile?: Record<string, string> | null }>) : null))
+      .then((json) => {
+        if (json?.profile && apply(json.profile)) setRestored("profile");
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
   }, []);
+
+  async function forgetProfile() {
+    await fetch("/api/public/participant-profile", { method: "DELETE", credentials: "same-origin" }).catch(() => undefined);
+    clearDraft();
+    formRef.current?.reset();
+    setErrors({});
+    setRestored(null);
+    setRememberMe(false);
+  }
 
   function focusField(name: FieldName) {
     if (name === "signatureDataUrl") {
@@ -167,6 +196,7 @@ export function AttendancePublicForm({
         phone: formData.get("phone"),
         signatureDataUrl: signature,
         publicListConsent: publicListEnabled && formData.get("publicListConsent") === "on",
+        rememberMe,
       }),
     });
     const json = (await res.json().catch(() => ({}))) as {
@@ -207,6 +237,7 @@ export function AttendancePublicForm({
   return (
     <form
       ref={formRef}
+      autoComplete="on"
       onSubmit={(event) => {
         event.preventDefault();
         void onSubmit(new FormData(event.currentTarget));
@@ -215,12 +246,31 @@ export function AttendancePublicForm({
     >
       <RequiredLegend />
       {restored ? (
-        <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-          Vos informations précédentes ont été préremplies : vérifiez-les avant de valider.
-        </p>
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+        >
+          <span>Vos informations précédentes ont été préremplies : vérifiez-les avant de valider.</span>
+          {restored === "profile" ? (
+            <button
+              type="button"
+              onClick={() => void forgetProfile()}
+              className="font-semibold underline underline-offset-2 hover:text-emerald-950"
+            >
+              Ce n&apos;est pas moi
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <Field label="Civilité" required htmlFor="civility" error={errors.civility}>
-        <Select id="civility" name="civility" required defaultValue="" onChange={() => clearError("civility")}>
+        <Select
+          id="civility"
+          name="civility"
+          required
+          defaultValue=""
+          autoComplete="honorific-prefix"
+          onChange={() => clearError("civility")}
+        >
           <option value="" disabled>
             Choisissez
           </option>
@@ -350,6 +400,20 @@ export function AttendancePublicForm({
           </span>
         </label>
       ) : null}
+      <label className="flex items-start gap-3 rounded-xl border border-line bg-sand/60 p-3 text-sm">
+        <input
+          type="checkbox"
+          checked={rememberMe}
+          onChange={(event) => setRememberMe(event.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-forest"
+        />
+        <span>
+          Mémoriser mes informations sur cet appareil pour mes prochains émargements.{" "}
+          <span className="text-muted">
+            La signature n&apos;est jamais mémorisée. Décochez sur un appareil partagé.
+          </span>
+        </span>
+      </label>
       <details className="rounded-xl bg-sand/60 px-3 py-2 text-xs leading-5 text-muted">
         <summary className="cursor-pointer font-semibold text-forest">Protection de vos données personnelles</summary>
         <p className="mt-2 whitespace-pre-line">{privacyNotice}</p>

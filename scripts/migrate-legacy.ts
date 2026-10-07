@@ -68,9 +68,15 @@ async function main() {
   const admin = await target.user.findFirst({ where: { role: "SUPER_ADMIN" } });
   if (!admin) throw new Error("Exécutez d'abord le seed pour disposer d'un administrateur.");
 
-  const meetings = await legacy.$queryRaw<LegacyMeeting[]>`
+  // LEGACY_PUBLICATION_IDS=281,282 : reprise limitée à quelques réunions (rattrapage ponctuel).
+  const onlyIds = (process.env.LEGACY_PUBLICATION_IDS ?? "")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const allMeetings = await legacy.$queryRaw<LegacyMeeting[]>`
     SELECT * FROM publication WHERE type_publication = 'REUNION'
   `;
+  const meetings = onlyIds.length ? allMeetings.filter((row) => onlyIds.includes(Number(row.id))) : allMeetings;
 
   for (const row of meetings) {
     const existing = await target.meeting.findFirst({

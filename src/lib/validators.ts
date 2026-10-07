@@ -105,6 +105,17 @@ const attendanceBaseSchema = z.object({
     publicListConsent: z.boolean().optional(),
   });
 
+/** Informations mémorisées sur l'appareil du participant pour préremplir ses prochains émargements. */
+export const participantProfileSchema = attendanceBaseSchema.pick({
+  civility: true,
+  lastName: true,
+  firstNames: true,
+  jobTitle: true,
+  organization: true,
+  email: true,
+  phone: true,
+});
+
 export const attendanceFormSchema = attendanceBaseSchema.superRefine(
   (data: z.infer<typeof attendanceBaseSchema>, ctx: z.RefinementCtx) => {
     if (data.phone && !isValidPhone(data.phone)) {
